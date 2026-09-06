@@ -136,7 +136,8 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       label: str = "", governance_enabled: bool = True,
                       expand: bool = False, lexical_weight: float = 1.0,
                       vector_weight: float = 1.0,
-                      rewrites: dict | None = None) -> dict:
+                      rewrites: dict | None = None,
+                      token_cap: int | None = None) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -193,6 +194,15 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                     final = search_memory(store, llm, settings, query=query,
                                           scope=scope, top_k=top_k, journal=None)
                     search_ms = round((time.perf_counter() - t0) * 1000, 1)
+                    # T2.3（AMI token 失真教训）：token 等预算截断——自测防"按条数
+                    # 塞 token"式虚高；从低分段截到预算内，至少保留 1 条。
+                    token_capped = 0
+                    if token_cap is not None:
+                        budget_chars = token_cap * 4
+                        acc = sum(len(x.content) for x in final)
+                        while acc > budget_chars and len(final) > 1:
+                            acc -= len(final.pop().content)
+                            token_capped += 1
                     final_ids = [r.id for r in final]
                     raw = channel_recall(store, llm, settings, query, scope)
                     ev_rows = []
@@ -267,6 +277,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                         "tokens_returned_base": tokens_base,
                         "tokens_returned_full": tokens_full,
                         "rewrites": {"probed": len(rws), "best_rank": rewrite_best},
+                        "token_capped": token_capped,
                     })
         finally:
             store.close()
@@ -294,9 +305,24 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
+        # T2.4：召回失败明细卡（miss 原因可审计；供 recall_miss 诊断与协议冻结对照）
+        _miss_rows = []
+        for _q in questions_meta:
+            for _e in _q["evidence"]:
+                if _e["bucket"] != "hit":
+                    _miss_rows.append({
+                        "qid": _q["qid"], "conv": _q["conv"],
+                        "query": _q["query"][:100],
+                        "bucket": _e["bucket"], "channels": _e["channels"],
+                    })
         out_dir.joinpath(f"aml_replay_{ts}.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        miss_md = "\n## 召回失败明细（miss）\n\n| qid | bucket | channels | query |\n|---|---|---|---|\n" + "\n".join(
+            f"| {_m['qid']} | {_m['bucket']} | {','.join(_m['channels'])} | {_m['query']} |"
+            for _m in _miss_rows
+        ) if _miss_rows else "\n## 召回失败明细（miss）\n\n（无）\n"
+        out_dir.joinpath(f"recall_miss_{ts}.md").write_text(miss_md, encoding="utf-8")
         md = _to_md(report)
         out_dir.joinpath(f"aml_replay_{ts}.md").write_text(md, encoding="utf-8")
         report["out_dir"] = str(out_dir)
@@ -365,6 +391,9 @@ def main() -> None:
                     help="B1 条件邻接扩写实验（信号查询 + 有界窗口；默认关）")
     ap.add_argument("--rewrites", type=Path, default=None,
                     help="E2：qid->改写查询列表 JSON（回忆问句探测，仅度量）")
+    ap.add_argument("--token-cap", type=int, default=None,
+                    help="T2.3：按 tokens/query 预算截断返回集(低分段优先删,至少留1)；"
+                    "None=不截断")
     ap.add_argument("--lexical-weight", type=float, default=1.0,
                     help="E1：RRF 词法通道权重（InvMem 对照=0.5；默认 1.0 等权）")
     ap.add_argument("--vector-weight", type=float, default=1.0,
@@ -394,7 +423,8 @@ def main() -> None:
                      expand=args.expand, lexical_weight=args.lexical_weight,
                      vector_weight=args.vector_weight,
                      rewrites=(json.loads(args.rewrites.read_text(encoding="utf-8"))
-                               if args.rewrites else None))
+                               if args.rewrites else None),
+                     token_cap=args.token_cap)
 
 
 if __name__ == "__main__":
