@@ -92,6 +92,11 @@ with Cortexa() as cm:
 真实使用（小说线索一致性 / 代码决策账本 / 学术推理）与 HTTP 服务共用同一
 Add/Search 管线，反馈不失真。
 
+### 开发决策账本（dogfooding）
+
+本仓库自身用 Cortexa 记录开发决策（scope=`cortexa-dev`，数据 `~/.cortexa`），规范见 `docs/dev-dogfooding.md`；
+随手记：`python examples/dev_log.py remember "决策+依据"`，开工前 `recall` 复习，改口径用 `retcon`。
+
 ### 参赛部署（一键合规）
 
 Docker 已固化参赛环境（`CORTEXA_SCENE=aml` + `CORTEXA_JOURNAL_MODE=eval` + `CORTEXA_NOVEL_ADAPTER_ENABLED=false`），docker build && docker run 即合规；
