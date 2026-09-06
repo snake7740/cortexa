@@ -84,6 +84,30 @@ def convert_item(q: dict, max_messages: int) -> dict | None:
     }
 
 
+# E3（2026-09-06，InvMem 细粒度分块参数 320/40）：仅切"长消息"，
+# 短轮（含证据轮，≤600 字符 ≈ <320 词）原样保留——证据映射不变。
+_CHUNK_WORDS = 320
+_CHUNK_OVERLAP = 40
+
+
+def chunk_long_messages(item: dict) -> dict:
+    msgs: list[dict] = []
+    for m in item["messages"]:
+        words = (m["content"] or "").split()
+        if len(words) <= _CHUNK_WORDS:
+            msgs.append(m)
+            continue
+        start = 0
+        while start < len(words):
+            piece = " ".join(words[start: start + _CHUNK_WORDS])
+            msgs.append({"role": m["role"], "content": piece})
+            start += _CHUNK_WORDS - _CHUNK_OVERLAP
+    item["messages"] = msgs
+    item["meta"]["n_messages"] = len(msgs)
+    item["meta"]["chunked"] = True
+    return item
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="LongMemEval-S -> aml_replay JSONL")
     ap.add_argument("--in", dest="src", type=Path, required=True)
@@ -91,6 +115,9 @@ def main() -> None:
     ap.add_argument("--max-questions", type=int, default=16)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--max-messages", type=int, default=1200)
+    ap.add_argument("--chunk-long", action="store_true",
+                    help="E3：长消息按词法单元切块（320 词/40 词重叠，InvMem 参数；"
+                    "短于 320 词的消息不切，证据轮保持原样可映射）")
     args = ap.parse_args()
 
     data = json.loads(args.src.read_text(encoding="utf-8"))
@@ -102,6 +129,8 @@ def main() -> None:
         if item is None:
             skipped += 1
             continue
+        if args.chunk_long:
+            item = chunk_long_messages(item)
         rows.append(item)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:

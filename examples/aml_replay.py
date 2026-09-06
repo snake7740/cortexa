@@ -134,7 +134,9 @@ def channel_recall(store: SQLiteMemoryStore, llm: LLMClient, settings: Settings,
 def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       provider: str = "hash", embedding_dim: int = 512,
                       label: str = "", governance_enabled: bool = True,
-                      expand: bool = False) -> dict:
+                      expand: bool = False, lexical_weight: float = 1.0,
+                      vector_weight: float = 1.0,
+                      rewrites: dict | None = None) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -151,6 +153,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             data_dir=Path(td) / "d", embedding_provider=provider,
             embedding_dim=embedding_dim, scene="aml", journal_mode="off",
             governance_enabled=governance_enabled, _env_file=None,
+            rrf_lexical_weight=lexical_weight, rrf_vector_weight=vector_weight,
         )
         settings.data_dir.mkdir(parents=True, exist_ok=True)  # 直连 store 需先建目录（server 路径由 create_app 代建）
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
@@ -244,6 +247,18 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                     if triggered:
                         expand_triggered += 1
                         expand_added += len(context_ids)
+                    # E2（AMI 回忆问句改写探测，2026-09-06）：对给定 qid 的改写
+                    # 查询额外检索，记录证据能否以更优 rank 命中（仅度量不改默认）。
+                    rws = (rewrites or {}).get(q.get("qid", ""), [])
+                    rewrite_best = None
+                    for rq in rws:
+                        rres = search_memory(store, llm, settings, query=rq,
+                                             scope=scope, top_k=top_k, journal=None)
+                        for i, rr in enumerate(rres, start=1):
+                            for text in q.get("evidence_texts") or []:
+                                if rr.content == text:
+                                    if rewrite_best is None or i < rewrite_best:
+                                        rewrite_best = i
                     questions_meta.append({
                         "qid": q.get("qid", ""), "conv": scope, "query": query[:120],
                         "top_k": top_k, "search_ms": search_ms,
@@ -251,6 +266,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                         "expand": {"triggered": triggered, "added": len(context_ids)},
                         "tokens_returned_base": tokens_base,
                         "tokens_returned_full": tokens_full,
+                        "rewrites": {"probed": len(rws), "best_rank": rewrite_best},
                     })
         finally:
             store.close()
@@ -347,6 +363,12 @@ def main() -> None:
                     help="关闭治理 supersede（诊断：证据被治理标旧时用）")
     ap.add_argument("--expand", action="store_true", default=False,
                     help="B1 条件邻接扩写实验（信号查询 + 有界窗口；默认关）")
+    ap.add_argument("--rewrites", type=Path, default=None,
+                    help="E2：qid->改写查询列表 JSON（回忆问句探测，仅度量）")
+    ap.add_argument("--lexical-weight", type=float, default=1.0,
+                    help="E1：RRF 词法通道权重（InvMem 对照=0.5；默认 1.0 等权）")
+    ap.add_argument("--vector-weight", type=float, default=1.0,
+                    help="E1：RRF 向量通道权重（InvMem dense=1.0；默认 1.0 等权）")
     ap.add_argument("--selfcheck", action="store_true", help="跑内置微型集（无数据可演示）")
     args = ap.parse_args()
 
@@ -369,7 +391,10 @@ def main() -> None:
                      provider=args.provider, embedding_dim=args.embedding_dim,
                      label=args.label,
                      governance_enabled=args.governance_enabled,
-                     expand=args.expand)
+                     expand=args.expand, lexical_weight=args.lexical_weight,
+                     vector_weight=args.vector_weight,
+                     rewrites=(json.loads(args.rewrites.read_text(encoding="utf-8"))
+                               if args.rewrites else None))
 
 
 if __name__ == "__main__":

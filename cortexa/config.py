@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     default_top_k: int = 5
     max_top_k: int = 200  # 冒烟测试会传 Top K 90，须允许 >=90
     rrf_k: int = 60  # RRF 常数（业务文档 8.x 三流融合思路）
+    # ---- RRF 通道权重（E1，2026-09-06，InvMem 参数对照）----
+    # 默认全 1.0=等权（行为零变化）；实验档：词法 0.5 / 稠密 1.0（InvMem
+    # MEMORY_LEXICAL_WEIGHT=0.5，dense 1.0）。改检索行为必须 retrieval_gate 复跑。
+    rrf_lexical_weight: float = 1.0   # fts(词法≈BM25) 通道融合权重
+    rrf_vector_weight: float = 1.0    # 向量(稠密/hash) 通道融合权重
     vector_min_cos: float = 0.05  # 语义通道相关性下限：低于此值不进入融合（precision-first）
     # hash 嵌入专用下限（2026-09-04 维度 G 修复）：hash 词袋余弦 = 词重叠比例，
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。

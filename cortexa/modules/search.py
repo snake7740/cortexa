@@ -133,13 +133,17 @@ def search_memory(
     # （fts/vec/sem/chapter/entity），journal hits 随结果落库——"候选从哪来"可审计
     srcs: dict[str, set[str]] = {}
 
-    def _merge(ranked: list[tuple[MemoryInstance, float]], channel: str) -> None:
+    def _merge(ranked: list[tuple[MemoryInstance, float]], channel: str,
+               weight: float = 1.0) -> None:
         for rank, (mem, _raw) in enumerate(ranked, start=1):
-            fused[mem.id] = fused.get(mem.id, 0.0) + 1.0 / (settings.rrf_k + rank)
+            # E1（2026-09-06）：RRF 通道权重（InvMem 词法 0.5/dense 1.0 对照；
+            # 默认等权=1.0 行为不变）。只作用于融合贡献，不改召回集。
+            fused[mem.id] = fused.get(mem.id, 0.0) + weight / (settings.rrf_k + rank)
             hits[mem.id] = (mem, fused[mem.id])
             srcs.setdefault(mem.id, set()).add(channel)
 
-    _merge(store.fts_search(query, scope, limit=k * 3), "fts")
+    _merge(store.fts_search(query, scope, limit=k * 3), "fts",
+           settings.rrf_lexical_weight)
     _provider = settings.embedding_provider
     # G1 语义软通道（2026-09-06）：openai provider + semantic_channel + 存在索引才走；
     # 语义成员融合分 ×SEM_CHANNEL_BOOST（软补充不主导）；无索引/维度不符自动回退。
@@ -153,7 +157,8 @@ def search_memory(
         # 双通道并存由 RRF 天然降权，各自补位。
         # 语义模式小改（2026-09-06，单点可回退）：候选不足是弱题漏检主因——
         # 仅在语义通道开启时把 FTS 候选加宽到 80 并入融合；hash 默认路径零改动。
-        _merge(store.fts_search(query, scope, limit=80), "fts")
+        _merge(store.fts_search(query, scope, limit=80), "fts",
+               settings.rrf_lexical_weight)
         sem_mems = store.sem_search(
             llm.embed([query])[0], scope, limit=settings.semantic_candidates,
             min_cos=settings.vector_min_cos,
@@ -169,7 +174,7 @@ def search_memory(
                 store.vector_search(
                     HashEmbedder(dim=hdim).embed(query), scope, limit=k * 3,
                     min_cos=settings.vector_min_cos_hash,
-                ), "vec",
+                ), "vec", settings.rrf_vector_weight,
             )
     elif _provider == "hash":
         # hash 向量与语义索引分库共存；hash provider 永不触碰 sem 表
@@ -177,7 +182,7 @@ def search_memory(
             store.vector_search(
                 llm.embed([query])[0], scope, limit=k * 3,
                 min_cos=settings.vector_min_cos_hash,
-            ), "vec",
+            ), "vec", settings.rrf_vector_weight,
         )
     # provider=openai 且（semantic_channel 关 或 无索引）：FTS/chapter/entity 兜底，
     # 不发 hash 向量（防 512/1024 维数错乱）
