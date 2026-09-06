@@ -89,7 +89,6 @@ def run_variant(db_path: Path, scope: str, mode: str, top_k: int = 3) -> list[di
     )
     llm = LLMClient(settings)
     names = _cjk_names(store, scope) if mode == "C" else []
-    out = []
     try:
         return _run_probes(store, llm, settings, names, mode, top_k, scope)
     finally:
