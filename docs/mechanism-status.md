@@ -28,7 +28,7 @@
 | 治理（维度 D）：scene-aware L1-L3 + 大库单查询 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；P1-2 find_conflicts 单次全行查询（语义1:1）；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e + test_hotpath_complexity.py |
 | retcon 修正链 / 实体关系图 / 编辑史 | facade.retcon/link/unlink/neighbors/entity_history；modules/graph.py | — | ✅ 已实现 | 双闭环 | test_retcon.py/test_graph.py |
 | 一致性审计 / 查体五科 / 探针 | facade.audit/checkup；modules/consistency.py/checkup.py | — | ✅ 已实现（只评不改） | 双闭环 | test_consistency/test_checkup；examples/novel_* |
-| 编号精确通道（第N章/第三十七章/Ch 40） | search.extract_chapter_nos + storage.chapter_search | chapter_channel=True | ✅ 已实现（小说实证 0/4→4/4） | W3 | test_review_fixes |
+| 编号精确通道（第N章/第三十七章/Ch 40） | search.extract_chapter_nos + storage.chapter_search | chapter_channel=True；CHAPTER_RRF_BOOST=6 | ✅ 已实现；2026-09-06 真实使用发现「第107章」查询被弱 FTS 挤出 top3 → 加强信号 ×6（现场 7/11→8/11，直查 top3 全中目标章） | W3 | tests/test_chapter_boost.py |
 | 实体特征通道 | storage.entity_search | entity_channel=False（默认关） | ✅ 代码保留/默认关；2026-09-06 复测 9/11 均等、on=3.7× 时延 → 维持关闭（跨词汇缺口需 P4 NER/语义嵌入） | W3 回基线 | .loop/entity_ab_report.json + test_review_fixes |
 | 异步增强双阶段 Add（drain 收尾 + 场景一致） | enhancer.py（track/wait_enhance_threads）+ pipeline 登记；facade.close/server lifespan drain | async_enhance_enabled=True；scene 决定 schema | ✅ 已实现；P1-5（2026-09-06）线程可优雅收尾、Enhancer schema 从 settings.scene 解析 | W3/P1-5 | test_p2_5_p1_5.py |
 | 小说适配器（实体消歧/生命周期/文风/守卫） | modules/novel_adapter.py | novel_adapter_enabled=False（参赛关）；adapter_* 分开关 | ✅ 已实现 | 双闭环 | test_cast/test_lifecycle_engine/test_relations；小说 208 章实测 |

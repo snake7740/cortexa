@@ -23,6 +23,12 @@ from ..models import MemoryInstance, SearchResult, to_search_result
 from ..storage import MemoryStore
 
 
+# 编号精确通道强信号（2026-09-06 真实使用发现）：显式章号查询（"第107章讲了什么"）
+# 若只按 RRF(k=60) 融合，章节命中（1/(60+r)≈0.016）会被弱 FTS 词重叠淹没——
+# 实测 top3 漂到无关章节。章号是强意图信号，给该通道成员 ×CHAPTER_RRF_BOOST。
+CHAPTER_RRF_BOOST = 6.0
+
+
 def _retention_factor(mem: MemoryInstance, settings: Settings) -> float:
     """R(t)×retrieval_weight 融合调制因子（w3_fsrs_wire）。
 
@@ -143,7 +149,13 @@ def search_memory(
     if settings.chapter_channel:
         chapter_nos = extract_chapter_nos(query)
         if chapter_nos:
-            _merge(store.chapter_search(chapter_nos, scope, limit=k * 3))
+            ch_mems = store.chapter_search(chapter_nos, scope, limit=k * 3)
+            _merge(ch_mems)
+            for ch_mem, _raw in ch_mems:
+                # 注意：_merge 已把 fused 值快照进 hits——boost 后必须同步回写快照，
+                # 否则 scored 阶段读到的是未 boost 的旧值（2026-09-06 实测踩坑）。
+                fused[ch_mem.id] = fused.get(ch_mem.id, 0.0) * CHAPTER_RRF_BOOST
+                hits[ch_mem.id] = (ch_mem, fused[ch_mem.id])
 
     scored: list[tuple[MemoryInstance, float]] = []
     for mem, score in hits.values():
