@@ -22,7 +22,6 @@ from ..llm import LLMClient
 from ..models import MemoryInstance, SearchResult, to_search_result
 from ..storage import MemoryStore
 
-
 # 编号精确通道强信号（2026-09-06 真实使用发现）：显式章号查询（"第107章讲了什么"）
 # 若只按 RRF(k=60) 融合，章节命中（1/(60+r)≈0.016）会被弱 FTS 词重叠淹没——
 # 实测 top3 漂到无关章节。章号是强意图信号，给该通道成员 ×CHAPTER_RRF_BOOST。

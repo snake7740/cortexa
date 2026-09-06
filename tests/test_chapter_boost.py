@@ -10,7 +10,7 @@ from pathlib import Path
 
 from cortexa.config import Settings
 from cortexa.llm import LLMClient
-from cortexa.models import MemoryInstance, MemoryType, content_hash
+from cortexa.models import MemoryInstance, content_hash
 from cortexa.modules.search import search_memory
 from cortexa.storage import SQLiteMemoryStore
 
