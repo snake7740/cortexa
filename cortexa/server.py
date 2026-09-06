@@ -32,6 +32,7 @@ from .journal import TaskJournal
 from .llm import LLMClient
 from .models import AddRequest, AddResponse, SearchRequest, SearchResponse
 from .modules.pipeline import run_add
+from .enhance_stats import stats as enhance_stats
 from .modules.search import search_memory
 from .storage import SQLiteMemoryStore
 
@@ -171,6 +172,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "novel_adapter_enabled": settings.novel_adapter_enabled,
             "embedding_provider": settings.embedding_provider,
             "api_key_required": bool(settings.api_key),
+            # P1-4：增强/治理/写回失败观察面（不再 except:pass 静默）
+            "enhance_stats": enhance_stats.snapshot(),
         }
 
     @app.delete("/scope/{scope}", dependencies=[Depends(require_key)])

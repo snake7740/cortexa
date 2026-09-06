@@ -164,8 +164,9 @@ def search_memory(
         try:
             adapter = NovelAdapter(store, llm, settings)
             adapter.rare_strengthen([r.id for r in results], scope, top_n=settings.rare_top_n)
-        except Exception:
-            pass  # RARE 写回失败不阻断检索（增强非必需）
+        except Exception as _exc:  # noqa: BLE001 —— RARE 写回失败不阻断检索，但进观察面
+            from ..enhance_stats import stats
+            stats.inc("rare", err=_exc)
 
     # ---- 领域适配器 pre_return hook ----
     if settings.novel_adapter_enabled and settings.adapter_lifecycle_guard and results:

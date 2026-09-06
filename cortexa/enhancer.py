@@ -129,8 +129,9 @@ class Enhancer:
                             evidence_chapter=rel["evidence_chapter"],
                         )
                         result["relations"] += 1
-                except Exception:
-                    pass  # 建边失败不阻断
+                except Exception as _exc:  # noqa: BLE001 —— 建边失败不阻断，进观察面
+                    from .enhance_stats import stats
+                    stats.inc("graph", err=_exc)
 
         self._enhanced_ids.add(mem.id)
         return result

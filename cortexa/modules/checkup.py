@@ -133,7 +133,9 @@ def run_checkup(
     for row in full_rows:
         try:
             assert_floor(SQLiteMemoryStore._row_to_mem(row))
-        except Exception:
+        except Exception as _exc:  # noqa: BLE001 —— 行解析失败计为地板违例，进观察面
+            from ..enhance_stats import stats
+            stats.inc("floor_check", err=_exc)
             report.floor_violations += 1
 
     # 2) 孤岛统计（复用 journal 既有口径）

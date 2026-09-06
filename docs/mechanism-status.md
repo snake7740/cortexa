@@ -24,7 +24,7 @@
 | 完整 RARE 四步重编码 | — | — | ⛔ 未实现 | P4 | README 术语表如实标注 |
 | Dreaming Cycle（重放/整合/修剪/发现） | —（docs/research/2026-08-31-dreaming-cycle-design.md 设计稿已锚） | — | ⛔ 未实现 | P3 | 设计稿；无消费代码 |
 | 主动遗忘：矛盾覆盖 supersede + forget | storage.supersede/forget；domain/governance.py | governance_enabled=True | ✅ 矛盾覆盖/手动遗忘已活 | W2 | test_smoke::test_supersede_marks_old_state；governance 测试 |
-| 主动遗忘：衰减遗忘引擎 + 安全遗忘条件 | —（config.forget_cosine_max/forget_llm_relevance_max 占位） | 未接线 | ⛔ 未实现（阈值只声明） | P4 | config.py 标注；P2-4 建议接线前删除 |
+| 主动遗忘：衰减遗忘引擎 + 安全遗忘条件 | —（P2-4 已收口：占位阈值已从 Settings 移除） | 无 | ⛔ 未实现（P4 落地时随消费方引入阈值） | P4 | docs/research 2026-08-31 论证 |
 | 治理（维度 D）：scene-aware L1-L3 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e（aml supersede / novel 空转对照） |
 | retcon 修正链 / 实体关系图 / 编辑史 | facade.retcon/link/unlink/neighbors/entity_history；modules/graph.py | — | ✅ 已实现 | 双闭环 | test_retcon.py/test_graph.py |
 | 一致性审计 / 查体五科 / 探针 | facade.audit/checkup；modules/consistency.py/checkup.py | — | ✅ 已实现（只评不改） | 双闭环 | test_consistency/test_checkup；examples/novel_* |

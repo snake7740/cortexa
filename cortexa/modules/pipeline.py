@@ -69,8 +69,9 @@ def run_add(
                 _stored_m = store.get(m.id, req.scope)
                 if _stored_m is not None:
                     _gov.govern(_stored_m, req.scope)
-        except Exception:
-            pass  # 治理失败不阻断写入（治理是增强非必需）
+        except Exception as _exc:  # noqa: BLE001 —— 治理失败不阻断写入，但进观察面
+            from ..enhance_stats import stats
+            stats.inc("governance", err=_exc)
 
     # ---- 合规登记：scope 元数据（P0-3：30 天 TTL 清扫依据）----
     # eval 部署（参赛评测）source=eval 的 scope 才会被启动清扫删除；真实使用 app 不删。
@@ -150,8 +151,9 @@ def run_add(
                             evidence=rel["evidence"],
                             evidence_chapter=rel["evidence_chapter"],
                         )
-                except Exception:
-                    pass  # 关系建边失败不阻断写入（增强非必需）
+                except Exception as _exc:  # noqa: BLE001
+                    from ..enhance_stats import stats
+                    stats.inc("graph", err=_exc)
 
     # ---- 双阶段 Add 异步增强（方案 A：进程内 daemon 线程；不阻塞响应）----
     if settings.async_enhance_enabled and pending and stored > 0:
@@ -173,12 +175,14 @@ def run_add(
                         _stored_m = store.get(m.id, req.scope)
                         if _stored_m is not None:
                             _enh.enhance(_stored_m, req.scope)
-                except Exception:
-                    pass  # 增强失败不阻塞、不重试爆炸（韧性：增强非必需）
+                except Exception as _exc:  # noqa: BLE001 —— 单条增强失败不阻塞、不重试爆炸，但进观察面
+                    from ..enhance_stats import stats
+                    stats.inc("enhance", err=_exc)
 
             _th.Thread(target=_enhance_worker, daemon=True).start()
-        except Exception:
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from ..enhance_stats import stats
+            stats.inc("enhance_spawn", err=_exc)
 
     return AddResponse(
         request_id=req.request_id,

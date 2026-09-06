@@ -15,7 +15,9 @@
 | P0-4 契约占位 | ✅ 已修（升级为真实对齐）：对照仓库根 _ref_apiguide.html（官方 API Guide）迁移契约——Add=request_id/messages/user_id/session_id，Add200=success+三ID 逐字节回显；Search=query/options?/user_id/top_k(正式100)；Search200=data[{id,content,score?,created_at?}]；golden 固化 | models.py 契约段 / server.py / tests/golden/official_aml_contract.json / tests/test_official_contract.py（8 项）；local_eval 以官方键复跑分数不变 |
 | P1-5b Enhancer schema 场景漂移 | ⏳ 顺带登记未动（随 P1-5 一并排期） | — |
 
-**仍 open（按原台账执行）**：P1-1/2/3/4/5a/6/7；P2-1/2/4/5/6/7；P3-1。详细现状见 docs/mechanism-status.md（单一事实源）。
+**P2-4 ✅（2026-09-06）**：未接线阈值已从 Settings 移除（无消费方，P4 落地时随消费方引入）。
+
+**仍 open（按原台账执行）**：P1-1/2/3/4/5a/6/7；P2-1/2/5/6/7；P3-1。详细现状见 docs/mechanism-status.md（单一事实源）。
 
 ---
 

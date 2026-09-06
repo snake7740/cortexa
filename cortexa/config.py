@@ -82,18 +82,13 @@ class Settings(BaseSettings):
     # ---- 业务红线（业务文档 12.3）----
     add_budget_ms: int = 500  # 已接线：/health add_within_budget 自证
     search_p95_ms: int = 200  # 已接线：/health search_within_budget 自证
-    evidence_token_cap: int = 5000  # 未接线（W3 证据截断消费，入库前需消费方，禁止只声明）
-    write_token_budget: int = 2000  # 未接线（W3 写入分块预算消费）
+    # P2-4（2026-09-06）：evidence_token_cap/write_token_budget/consolidation_core_level/
+    # forget_cosine_max/forget_llm_relevance_max 等未接线阈值已从 Settings 移除（无消费方，
+    # 禁止只声明）；对应机制（证据截断/写入分块/核心记忆区/遗忘引擎）落地 P3/P4 时随消费
+    # 方一起引入，设计依据见 docs/research 2026-08-31 论证。
 
     # ---- 巩固调度（业务文档 8.1，FSRS 简化参数）----
     request_retention: float = 0.9  # FSRS 目标留存率（touch_retrieval 强化基准）
-    consolidation_core_level: int = 6  # 未接线：核心记忆区属 P3 规划，遗忘/巩固引擎落地后消费
-
-    # ---- 安全遗忘条件（业务文档 8.5 / 邓煜安全条件类比）----
-    # 未接线：遗忘引擎属 P4 规划（设计决策见 docs/research 2026-08-31 论证），
-    # 引擎落地前两阈值即消费方，在此之前不得宣称遗忘能力已具备
-    forget_cosine_max: float = 0.30  # epsilon_1：一阶余弦相似度须低于此值
-    forget_llm_relevance_max: float = 0.20  # epsilon_2：二阶 LLM 关联评估上限
 
     # ---- 场景（L3 schema 选择：novel/aml/code/custom）----
     scene: str = "novel"  # 决定治理/增强/生命周期用哪个场景 schema

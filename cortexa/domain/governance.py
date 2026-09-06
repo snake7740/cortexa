@@ -152,7 +152,9 @@ class GovernanceEngine:
                 try:
                     self._store.supersede(old.id, new_mem.id, scope)
                     result["superseded"] += 1
-                except Exception:
+                except Exception as _exc:  # noqa: BLE001 —— supersede 失败转 kept 的分支，进观察面
+                    from ..enhance_stats import stats
+                    stats.inc("governance_skip", err=_exc)
                     result["kept"] += 1
             else:
                 result["kept"] += 1
