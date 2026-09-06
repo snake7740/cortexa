@@ -246,6 +246,11 @@ def search_memory(
         _years = year_cues(eff_query)
         if _years:
             scored = apply_year_filter(scored, _years, set())
+    if settings.recency_arbitration_enabled:
+        # recency-arbitrated retrieval（默认关）：冲突簇内显式重排为最新在前
+        # （排序与时间过滤之后执行，避免被 sort 覆盖）
+        from .recency_arbitration import arbitrate
+        scored = arbitrate(scored, top_n=settings.recency_arbitration_top_n)
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关
