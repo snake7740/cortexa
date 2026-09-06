@@ -46,6 +46,12 @@ class TestJournalEvents:
         assert detail["query"] == "怀表交给了谁"
         assert [h["id"] for h in detail["hits"]] == [h.id for h in hits]
         assert detail["latency_ms"] >= 0
+        # P2-5b：候选池通道来源随结果落库——每个命中可回答"从哪个通道来"
+        assert detail["hits"] and all(
+            isinstance(h.get("channels"), list) and h["channels"]
+            and set(h["channels"]) <= {"fts", "vec", "sem", "chapter", "entity"}
+            for h in detail["hits"]
+        )
 
     def test_scope_filtered_tail(self, cm: Cortexa) -> None:
         cm.remember("novel note", scope="novel")

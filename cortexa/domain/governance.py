@@ -148,14 +148,37 @@ class GovernanceEngine:
         # 信号 3：内容同主题（防治理过度——同 subject 不同属性不得互相取代）
         return self._topic_overlap(new_text, old_text, new_mem, old)
 
+    @classmethod
+    def _signal_desc(cls, text: str, schema: SceneSchema) -> str:
+        """治理命中的信号描述（审计 reason 用）：否定词 or schema 治理词。"""
+        m = cls._NEGATE.search(text or "")
+        if m:
+            return f"negate:{m.group(0).strip().lower()}"
+        for w in (schema.event_predicates.get("supersede", ())
+                  + schema.event_predicates.get("update", ())
+                  + schema.event_predicates.get("withdraw", ())):
+            if w.lower() in (text or "").lower():
+                return f"schema:{w.lower()}"
+        return "supersede-signal"
+
     def govern(self, new_mem: MemoryInstance, scope: str) -> dict:
-        """对新记忆执行治理：找冲突旧记忆，若新陈述取代则 supersede 旧记忆。"""
-        result = {"subject": self._subject_key(new_mem), "superseded": 0, "kept": 0}
+        """对新记忆执行治理：找冲突旧记忆，若新陈述取代则 supersede 旧记忆。
+
+        events 逐条落 supersede 审计链（P2-5b，2026-09-06）：old_id/new_id/reason
+        供 pipeline 写 journal——"谁取代了谁、依据什么信号"可追溯（对齐 retcon reason）。
+        """
+        result = {"subject": self._subject_key(new_mem), "superseded": 0, "kept": 0,
+                  "events": []}
         for old in self.find_conflicts(new_mem, scope):
             if self.should_supersede(new_mem, old):
                 try:
                     self._store.supersede(old.id, new_mem.id, scope)
                     result["superseded"] += 1
+                    result["events"].append({
+                        "old_id": old.id,
+                        "new_id": new_mem.id,
+                        "reason": f"{self._signal_desc(new_mem.content, self._schema)}|same-topic",
+                    })
                 except Exception as _exc:  # noqa: BLE001 —— supersede 失败转 kept 的分支，进观察面
                     from ..enhance_stats import stats
                     stats.inc("governance_skip", err=_exc)

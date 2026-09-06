@@ -13,8 +13,10 @@ ENV CORTEXA_DATA_DIR=/app/data
 ENV CORTEXA_SCENE=aml
 # 评测数据脱敏（官方「评测数据不留日志」红线；app 模式会把 query/消息原文落库）
 ENV CORTEXA_JOURNAL_MODE=eval
-# 领域适配器参赛必须关闭（保持最小面）
+# 领域适配器参赛必须关闭（保持最小面；adapter 关 => RARE-lite 门控关，Search 纯读）
 ENV CORTEXA_NOVEL_ADAPTER_ENABLED=false
+# 双阶段异步增强参赛关闭（P2-5b 2026-09-06：评测部署最小模型面 + 预算确定性；真实使用可自行开启）
+ENV CORTEXA_ASYNC_ENHANCE_ENABLED=false
 # 语义嵌入/鉴权按需经运行环境注入（CORTEXA_EMBEDDING_PROVIDER=openai +
 # CORTEXA_OPENAI_API_KEY/BASE_URL；CORTEXA_API_KEY=Memory System Key）
 

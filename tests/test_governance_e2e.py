@@ -11,6 +11,8 @@ novel schema 无 supersede/update/withdraw 事件词，AML 治理词（currently
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,19 @@ from fastapi.testclient import TestClient
 
 from cortexa.config import Settings
 from cortexa.server import create_app
+
+
+def _journal_govern_events(tmp_path: Path, scene: str) -> list[dict]:
+    """直读 server 库的 journal govern 事件（P2-5b 审计链断言用）。"""
+    db = tmp_path / f"data-{scene}" / "cortexa.db"
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT detail_json FROM journal WHERE event_type = 'govern'"
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+    finally:
+        conn.close()
 
 
 def _client(tmp_path: Path, scene: str) -> TestClient:
@@ -75,6 +90,12 @@ def test_aml_scene_supersedes_old_and_excludes_from_search(
         # 维度 D 核心：旧陈述已被取代，不应出现在检索结果；新陈述必须可见
         assert all(old_stmt not in r for r in results), results
         assert any(new_stmt in r for r in results), results
+        # P2-5b：supersede 逐条落 journal 审计链（谁取代谁 + 依据什么信号）
+        events = _journal_govern_events(tmp_path, "aml")
+        assert len(events) == 1, events
+        ev = events[0]
+        assert ev["subject"] and ev["old_id"] != ev["new_id"]
+        assert ev["reason"].startswith(("negate:", "schema:"))
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +113,8 @@ def test_novel_scene_does_not_supersede_english_preference(tmp_path: Path) -> No
         results = _search(client, "sc", "what drink does Alice prefer now")
         # novel schema 无 update 词 -> 不 supersede；检索双记忆并存（多事实陈述）
         assert any(old_stmt in r for r in results), results
+        # 未触发 supersede → journal 无 govern 事件（审计链与行为一致）
+        assert _journal_govern_events(tmp_path, "novel") == []
 
 
 # ---------------------------------------------------------------------------

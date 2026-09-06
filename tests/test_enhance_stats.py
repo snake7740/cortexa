@@ -62,7 +62,12 @@ def test_search_rare_failure_counted_and_does_not_block(tmp_path: Path, monkeypa
         raise RuntimeError("simulated rare write failure")
 
     monkeypatch.setattr(store, "add_links", _boom)
-    cfg = Settings(data_dir=tmp_path, embedding_provider="hash", _env_file=None)
+    # P2-5b（2026-09-06）：RARE 触发门控 = rare_enabled and novel_adapter_enabled——
+    # 本用例模拟适配器开启时 RARE 写回失败，故显式开 adapter
+    cfg = Settings(
+        data_dir=tmp_path, embedding_provider="hash",
+        novel_adapter_enabled=True, _env_file=None,
+    )
     results = search_memory(
         store, LLMClient(cfg), cfg, query="Alice", scope="s", top_k=5
     )

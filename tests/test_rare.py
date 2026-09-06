@@ -24,8 +24,13 @@ def _add(store, scope: str, text: str, mem_type=None) -> str:
     return m.id
 
 
-def _settings() -> Settings:
-    return Settings(embedding_provider="hash", _env_file=None, rare_enabled=True, embedding_dim=32)
+def _settings(*, adapter: bool = True) -> Settings:
+    # RARE-lite 属小说适配器能力：search 触发门控 = rare_enabled and novel_adapter_enabled
+    # （P2-5b，2026-09-06 参赛 Search 纯读）——故期望 RARE 生效的用例默认 adapter=True
+    return Settings(
+        embedding_provider="hash", _env_file=None, rare_enabled=True,
+        novel_adapter_enabled=adapter, embedding_dim=32,
+    )
 
 
 def test_rare_links_same_topic_results(tmp_path: Path) -> None:
@@ -53,6 +58,27 @@ def test_rare_links_same_topic_results(tmp_path: Path) -> None:
     rc = store.get(c, scope)
     if rc is not None and c not in got:
         assert c not in ra.links
+
+
+def test_rare_gated_off_without_adapter_keeps_search_readonly(tmp_path: Path) -> None:
+    """P2-5b：novel_adapter_enabled=False（参赛/通用路径）时 Search 不得写记忆桥。
+
+    rare_enabled=True 但适配器关 → RARE-lite 不触发，命中记忆 links_json 保持空——
+    评测 Search 路径纯读不变量。
+    """
+    store = _store(tmp_path)
+    scope = "s"
+    a = _add(store, scope, "Alice moved to Sweden in 2019")
+    b = _add(store, scope, "Alice adopted a dog named Rob")
+    results = search_memory(
+        store, LLMClient(_settings(adapter=False)), _settings(adapter=False),
+        query="Alice", scope=scope, top_k=3,
+    )
+    assert {r.id for r in results} >= {a, b}
+    ra = store.get(a, scope)
+    rb = store.get(b, scope)
+    assert ra is not None and rb is not None
+    assert ra.links == [] and rb.links == []  # 纯读：无 RARE 写回
 
 
 def test_rare_idempotent_no_duplicate(tmp_path: Path) -> None:

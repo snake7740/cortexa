@@ -1,6 +1,6 @@
 # Cortexa 机制状态总表（单一事实源）
 
-> 版本 v1.0 | 更新 2026-09-06（批① P0 修复落地后刷新）| 维护规则：**任何机制/开关/契约改动必须同步本表**；
+> 版本 v2.0 | 更新 2026-09-06（对照核查修复批 P2-5b 落地后刷新，259 passed 口径）| 维护规则：**任何机制/开关/契约改动必须同步本表**；
 > 排期词汇与 README 里程碑一致（P3/P4 = 未实现阶段承诺，如实标注，禁止提前宣称）。
 > 取代：Cortexa 根目录 `Cortexa_仿生AI记忆系统_完整项目文档.docx`（2026-08-29 规格，已归档为设计史参考——其包结构 consolidation.py/forgetting.py、选型 Qdrant/Neo4j/PostgreSQL、LLM gpt-4o 均非现实）。
 
@@ -20,25 +20,25 @@
 | 维度地板审计（压缩前结构不丢） | modules/dimension_floor.py（enforce/assert_floor） | — | ✅ 已实现 | W2 | test_basic |
 | FSRS 遗忘曲线检索调制 + 稳定性增长 | models.FSRSState.retrievability；search._retention_factor；storage.touch_retrieval（S'=S×1.15 封顶 3650 天） | retrieval_fusion_weight=0.15（首过中性） | ✅ 已实现；**P1-6 最小稳定性更新 2026-09-06 落地**（越用越牢兑现） | W3/P1-6 | test_review_fixes::TestFSRSRetentionModulation + tests/test_fsrs_growth.py |
 | 巩固即复习（touch，批量单查询） | storage.touch_retrieval（P1-1：IN 单查 + executemany 单事务） | — | ✅ 已实现 | W3/P1-1 | test_hotpath_complexity.py |
-| RARE-lite（检索命中两两关联） | novel_adapter.rare_strengthen | rare_enabled=True；rare_top_n=5 | ✅ 已实现 | W3 | test_rare.py |
+| RARE-lite（检索命中两两关联） | novel_adapter.rare_strengthen（search 门控 = rare_enabled **and novel_adapter_enabled**，P2-5b 2026-09-06：参赛/通用路径 Search 纯读不写记忆桥） | rare_enabled=True；rare_top_n=5 | ✅ 已实现 | W3 | test_rare.py（含 gate-off 纯读用例） |
 | 完整 RARE 四步重编码 | — | — | ⛔ 未实现 | P4 | README 术语表如实标注 |
 | Dreaming Cycle（重放/整合/修剪/发现） | —（docs/research/2026-08-31-dreaming-cycle-design.md 设计稿已锚） | — | ⛔ 未实现 | P3 | 设计稿；无消费代码 |
 | 主动遗忘：矛盾覆盖 supersede + forget | storage.supersede/forget；domain/governance.py | governance_enabled=True | ✅ 矛盾覆盖/手动遗忘已活 | W2 | test_smoke::test_supersede_marks_old_state；governance 测试 |
 | 主动遗忘：衰减遗忘引擎 + 安全遗忘条件 | —（P2-4 已收口：占位阈值已从 Settings 移除） | 无 | ⛔ 未实现（P4 落地时随消费方引入阈值） | P4 | docs/research 2026-08-31 论证 |
-| 治理（维度 D）：scene-aware L1-L3 + 大库单查询 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；P1-2 find_conflicts 单次全行查询（语义1:1）；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e + test_hotpath_complexity.py |
+| 治理（维度 D）：scene-aware L1-L3 + 大库单查询 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；P1-2 find_conflicts 单次全行查询（语义1:1）；P2-5b supersede 逐条落 journal "govern" 事件（old_id/new_id/reason）；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e + test_hotpath_complexity.py |
 | retcon 修正链 / 实体关系图 / 编辑史 | facade.retcon/link/unlink/neighbors/entity_history；modules/graph.py | — | ✅ 已实现 | 双闭环 | test_retcon.py/test_graph.py |
 | 一致性审计 / 查体五科 / 探针 | facade.audit/checkup；modules/consistency.py/checkup.py | — | ✅ 已实现（只评不改） | 双闭环 | test_consistency/test_checkup；examples/novel_* |
 | 编号精确通道（第N章/第三十七章/Ch 40） | search.extract_chapter_nos + storage.chapter_search | chapter_channel=True；CHAPTER_RRF_BOOST=6 | ✅ 已实现；2026-09-06 真实使用发现「第107章」查询被弱 FTS 挤出 top3 → 加强信号 ×6（现场 7/11→8/11，直查 top3 全中目标章） | W3 | tests/test_chapter_boost.py |
 | 实体特征通道 | storage.entity_search | entity_channel=False（默认关） | ✅ 代码保留/默认关；2026-09-06 复测 9/11 均等、on=3.7× 时延 → 维持关闭（跨词汇缺口需 P4 NER/语义嵌入） | W3 回基线 | .loop/entity_ab_report.json + test_review_fixes |
-| 异步增强双阶段 Add（drain 收尾 + 场景一致） | enhancer.py（track/wait_enhance_threads）+ pipeline 登记；facade.close/server lifespan drain | async_enhance_enabled=True；scene 决定 schema | ✅ 已实现；P1-5（2026-09-06）线程可优雅收尾、Enhancer schema 从 settings.scene 解析 | W3/P1-5 | test_p2_5_p1_5.py |
+| 异步增强双阶段 Add（drain 收尾 + 场景一致） | enhancer.py（track/wait_enhance_threads）+ pipeline 登记；facade.close/server lifespan drain | async_enhance_enabled=True（参赛 Docker 固化 False，P2-5b）；scene 决定 schema | ✅ 已实现；P1-5（2026-09-06）线程可优雅收尾、Enhancer schema 从 settings.scene 解析 | W3/P1-5 | test_p2_5_p1_5.py |
 | 小说适配器（实体消歧/生命周期/文风/守卫） | modules/novel_adapter.py | novel_adapter_enabled=False（参赛关）；adapter_* 分开关 | ✅ 已实现 | 双闭环 | test_cast/test_lifecycle_engine/test_relations；小说 208 章实测 |
 | lifecycle guard 警告 → 独立字段 | novel_adapter.guard_lifecycle → SearchResult.warnings（exclude=True） | adapter_lifecycle_guard=True | ✅ 已实现；P2-5（2026-09-06）content 保持证据原文纯度，警告独立可读 | P2-5 | test_p2_5_p1_5.py |
 | LLM 韧性（超时/重试/熔断/降级） | llm/resilience.py + /health llm_resilience | llm_retry_max 等 | ✅ 已实现 | W2 | test_llm_resilience |
 | 任务流水 journal（app/eval/off 脱敏） | journal.py；pipeline/search 写入 | journal_mode | ✅ 已实现 | W2 | test_journal |
 | scope 元数据/TTL 登记 | storage.record_scope（run_add 内自动） | source=eval if journal_mode=eval | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract::test_ttl |
-| 持久化/检索性能 | SQLite 三合一 + 向量缓存分页 | — | ✅ 现状；已知债务：P1-1 search 同步写、P1-2 治理 N+1、P1-3 embed 300ms>200ms（openai 路径）、P1-4 except×9 | P1 | — |
+| 持久化/检索性能 | SQLite 三合一 + 向量缓存分页 | — | ✅ 现状；已清偿：P1-1 touch 批量单事务、P1-2 治理单次全行查询、P1-4 EnhanceStats 观察面（2026-09-06）；剩余债务：P1-3 embed 300ms>200ms 仅 openai/语义路径（参赛 hash 路径不受影响） | P1 | tests/test_hotpath_complexity.py |
 | 链接两平面（非双写，P2-1 判定 2026-09-06） | memories.links_json=RARE 记忆-记忆桥；graph.links=实体-实体关系（link_type/基数/evidence） | — | ⚠️ 语义不同不可合并：记忆桥保留 links_json（检索消费待 P4 NER）；实体图维持实体权威。检索零消费仍为债务（P2-1b） | P2-1 | review-issues P2-1 处置 |
-| 质量闸 | pytest（tests/ 24 文件） | — | ✅ 239 passed（2026-09-06 实跑 29.4s）；**无 git/CI/lint**（P1-7 open） | P1-7 | 本表即审计证据 |
+| 质量闸 | scripts/check.py（compileall + ruff + pytest）；git 基线 | — | ✅ 259 passed（2026-09-06 实跑）；git 基线 + ruff（E4/E7/E9/F/I，项目闸门范围全绿）——原 P1-7 已关闭 | P1-7 关闭 | scripts/check.py；ledger 行 5-22 |
 
 ## 二、排期衔接（README 里程碑对照）
 

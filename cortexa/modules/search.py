@@ -129,13 +129,17 @@ def search_memory(
 
     fused: dict[str, float] = {}
     hits: dict[str, tuple[MemoryInstance, float]] = {}
+    # 候选池通道来源（P2-5b，2026-09-06）：每个进入融合的 id 记录贡献通道
+    # （fts/vec/sem/chapter/entity），journal hits 随结果落库——"候选从哪来"可审计
+    srcs: dict[str, set[str]] = {}
 
-    def _merge(ranked: list[tuple[MemoryInstance, float]]) -> None:
+    def _merge(ranked: list[tuple[MemoryInstance, float]], channel: str) -> None:
         for rank, (mem, _raw) in enumerate(ranked, start=1):
             fused[mem.id] = fused.get(mem.id, 0.0) + 1.0 / (settings.rrf_k + rank)
             hits[mem.id] = (mem, fused[mem.id])
+            srcs.setdefault(mem.id, set()).add(channel)
 
-    _merge(store.fts_search(query, scope, limit=k * 3))
+    _merge(store.fts_search(query, scope, limit=k * 3), "fts")
     _provider = settings.embedding_provider
     # G1 语义软通道（2026-09-06）：openai provider + semantic_channel + 存在索引才走；
     # 语义成员融合分 ×SEM_CHANNEL_BOOST（软补充不主导）；无索引/维度不符自动回退。
@@ -149,12 +153,12 @@ def search_memory(
         # 双通道并存由 RRF 天然降权，各自补位。
         # 语义模式小改（2026-09-06，单点可回退）：候选不足是弱题漏检主因——
         # 仅在语义通道开启时把 FTS 候选加宽到 80 并入融合；hash 默认路径零改动。
-        _merge(store.fts_search(query, scope, limit=80))
+        _merge(store.fts_search(query, scope, limit=80), "fts")
         sem_mems = store.sem_search(
             llm.embed([query])[0], scope, limit=settings.semantic_candidates,
             min_cos=settings.vector_min_cos,
         )
-        _merge(sem_mems)
+        _merge(sem_mems, "sem")
         for sem_mem, _raw in sem_mems:
             fused[sem_mem.id] = fused.get(sem_mem.id, 0.0) * SEM_CHANNEL_BOOST
             hits[sem_mem.id] = (sem_mem, fused[sem_mem.id])
@@ -165,7 +169,7 @@ def search_memory(
                 store.vector_search(
                     HashEmbedder(dim=hdim).embed(query), scope, limit=k * 3,
                     min_cos=settings.vector_min_cos_hash,
-                )
+                ), "vec",
             )
     elif _provider == "hash":
         # hash 向量与语义索引分库共存；hash provider 永不触碰 sem 表
@@ -173,17 +177,17 @@ def search_memory(
             store.vector_search(
                 llm.embed([query])[0], scope, limit=k * 3,
                 min_cos=settings.vector_min_cos_hash,
-            )
+            ), "vec",
         )
     # provider=openai 且（semantic_channel 关 或 无索引）：FTS/chapter/entity 兜底，
     # 不发 hash 向量（防 512/1024 维数错乱）
     if settings.entity_channel:
-        _merge(store.entity_search(query, scope, limit=k * 3))
+        _merge(store.entity_search(query, scope, limit=k * 3), "entity")
     if settings.chapter_channel:
         chapter_nos = extract_chapter_nos(query)
         if chapter_nos:
             ch_mems = store.chapter_search(chapter_nos, scope, limit=k * 3)
-            _merge(ch_mems)
+            _merge(ch_mems, "chapter")
             for ch_mem, _raw in ch_mems:
                 # 注意：_merge 已把 fused 值快照进 hits——boost 后必须同步回写快照，
                 # 否则 scored 阶段读到的是未 boost 的旧值（2026-09-06 实测踩坑）。
@@ -203,8 +207,10 @@ def search_memory(
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关
     store.touch_retrieval([r.id for r in results], scope)
 
-    # RARE-lite：检索增强重编码——同题命中的记忆两两关联写回（确定性零 LLM）
-    if settings.rare_enabled and len(results) >= 2:
+    # RARE-lite：检索增强重编码——同题命中的记忆两两关联写回（确定性零 LLM）。
+    # 门控 = novel_adapter_enabled（P2-5b，2026-09-06）：RARE 属小说适配器能力，
+    # 只在适配器启用（真实小说流）时写记忆桥；参赛/通用路径（adapter 关）Search 保持纯读。
+    if settings.rare_enabled and settings.novel_adapter_enabled and len(results) >= 2:
         from .novel_adapter import NovelAdapter
         try:
             adapter = NovelAdapter(store, llm, settings)
@@ -225,7 +231,11 @@ def search_memory(
             scope=scope,
             query=query,
             top_k=k,
-            hits=[{"id": r.id, "score": round(r.score, 6)} for r in results],
+            hits=[
+                {"id": r.id, "score": round(r.score, 6),
+                 "channels": sorted(srcs.get(r.id, ()))}
+                for r in results
+            ],
             latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )
 

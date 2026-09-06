@@ -68,7 +68,21 @@ def run_add(
             for m in pending:
                 _stored_m = store.get(m.id, req.scope)
                 if _stored_m is not None:
-                    _gov.govern(_stored_m, req.scope)
+                    _gres = _gov.govern(_stored_m, req.scope)
+                    # P2-5b（2026-09-06）：治理 supersede 逐条落 journal——
+                    # 审计链可回答"谁取代了谁、依据什么信号"（对齐 retcon reason 口径）
+                    if journal is not None:
+                        for _ev in _gres.get("events", []):
+                            journal.record(
+                                "govern",
+                                scope=req.scope,
+                                session_id=req.session_id,
+                                request_id=req.request_id,
+                                subject=_gres["subject"],
+                                old_id=_ev["old_id"],
+                                new_id=_ev["new_id"],
+                                reason=_ev["reason"],
+                            )
         except Exception as _exc:  # noqa: BLE001 —— 治理失败不阻断写入，但进观察面
             from ..enhance_stats import stats
             stats.inc("governance", err=_exc)
