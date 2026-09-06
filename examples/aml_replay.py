@@ -137,7 +137,9 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       expand: bool = False, lexical_weight: float = 1.0,
                       vector_weight: float = 1.0,
                       rewrites: dict | None = None,
-                      token_cap: int | None = None) -> dict:
+                      token_cap: int | None = None,
+                      plan: bool = False,
+                      soft_governance: bool = False) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -155,6 +157,8 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             embedding_dim=embedding_dim, scene="aml", journal_mode="off",
             governance_enabled=governance_enabled, _env_file=None,
             rrf_lexical_weight=lexical_weight, rrf_vector_weight=vector_weight,
+            query_plan_enabled=plan,
+            governance_soft_enabled=soft_governance,
         )
         settings.data_dir.mkdir(parents=True, exist_ok=True)  # 直连 store 需先建目录（server 路径由 create_app 代建）
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
@@ -391,6 +395,10 @@ def main() -> None:
                     help="B1 条件邻接扩写实验（信号查询 + 有界窗口；默认关）")
     ap.add_argument("--rewrites", type=Path, default=None,
                     help="E2：qid->改写查询列表 JSON（回忆问句探测，仅度量）")
+    ap.add_argument("--plan", action="store_true", default=False,
+                    help="T1.1 J1：开启确定性查询规划(entities 通道)")
+    ap.add_argument("--soft-governance", action="store_true", default=False,
+                    help="T1.4 B2：治理 soft 模式(旧值降权仍可返)")
     ap.add_argument("--token-cap", type=int, default=None,
                     help="T2.3：按 tokens/query 预算截断返回集(低分段优先删,至少留1)；"
                     "None=不截断")
@@ -424,7 +432,8 @@ def main() -> None:
                      vector_weight=args.vector_weight,
                      rewrites=(json.loads(args.rewrites.read_text(encoding="utf-8"))
                                if args.rewrites else None),
-                     token_cap=args.token_cap)
+                     token_cap=args.token_cap, plan=args.plan,
+                     soft_governance=args.soft_governance)
 
 
 if __name__ == "__main__":
