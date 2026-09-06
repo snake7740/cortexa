@@ -10,9 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-import pytest
-
 from cortexa.config import Settings
 from cortexa.models import MemoryInstance, content_hash
 from cortexa.modules.search import search_memory

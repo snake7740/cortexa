@@ -11,7 +11,6 @@ dry-run：只报将构建行数/预估耗时/维度。
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
 import time
