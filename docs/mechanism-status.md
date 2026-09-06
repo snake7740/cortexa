@@ -19,20 +19,20 @@
 | RULE 专属 Wing（永不衰减 + rule_boost） | models.MemoryType.RULE + no_decay；search._retention_factor | rule_boost=1.25；rule_llm_fallback=True | ✅ 已实现 | W2/维度F | test_smoke::test_rule_memory_cannot_be_forgotten |
 | 维度地板审计（压缩前结构不丢） | modules/dimension_floor.py（enforce/assert_floor） | — | ✅ 已实现 | W2 | test_basic |
 | FSRS 遗忘曲线检索调制 + 稳定性增长 | models.FSRSState.retrievability；search._retention_factor；storage.touch_retrieval（S'=S×1.15 封顶 3650 天） | retrieval_fusion_weight=0.15（首过中性） | ✅ 已实现；**P1-6 最小稳定性更新 2026-09-06 落地**（越用越牢兑现） | W3/P1-6 | test_review_fixes::TestFSRSRetentionModulation + tests/test_fsrs_growth.py |
-| 巩固即复习（touch） | storage.touch_retrieval | — | ✅ 已实现 | W3 | test_journal::TestFsrsRetrievalReinforcement |
+| 巩固即复习（touch，批量单查询） | storage.touch_retrieval（P1-1：IN 单查 + executemany 单事务） | — | ✅ 已实现 | W3/P1-1 | test_hotpath_complexity.py |
 | RARE-lite（检索命中两两关联） | novel_adapter.rare_strengthen | rare_enabled=True；rare_top_n=5 | ✅ 已实现 | W3 | test_rare.py |
 | 完整 RARE 四步重编码 | — | — | ⛔ 未实现 | P4 | README 术语表如实标注 |
 | Dreaming Cycle（重放/整合/修剪/发现） | —（docs/research/2026-08-31-dreaming-cycle-design.md 设计稿已锚） | — | ⛔ 未实现 | P3 | 设计稿；无消费代码 |
 | 主动遗忘：矛盾覆盖 supersede + forget | storage.supersede/forget；domain/governance.py | governance_enabled=True | ✅ 矛盾覆盖/手动遗忘已活 | W2 | test_smoke::test_supersede_marks_old_state；governance 测试 |
 | 主动遗忘：衰减遗忘引擎 + 安全遗忘条件 | —（P2-4 已收口：占位阈值已从 Settings 移除） | 无 | ⛔ 未实现（P4 落地时随消费方引入阈值） | P4 | docs/research 2026-08-31 论证 |
-| 治理（维度 D）：scene-aware L1-L3 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e（aml supersede / novel 空转对照） |
+| 治理（维度 D）：scene-aware L1-L3 + 大库单查询 | domain/{cast,facts,lifecycle,governance}.py；schema.py（novel/aml） | scene=novel 默认（真实使用）/ aml（参赛 Docker 已固化） | ✅ novel/aml 已实现；P1-2 find_conflicts 单次全行查询（语义1:1）；**code schema 未实现（推断场景）** | W3+/P0-1 | test_governance_e2e + test_hotpath_complexity.py |
 | retcon 修正链 / 实体关系图 / 编辑史 | facade.retcon/link/unlink/neighbors/entity_history；modules/graph.py | — | ✅ 已实现 | 双闭环 | test_retcon.py/test_graph.py |
 | 一致性审计 / 查体五科 / 探针 | facade.audit/checkup；modules/consistency.py/checkup.py | — | ✅ 已实现（只评不改） | 双闭环 | test_consistency/test_checkup；examples/novel_* |
 | 编号精确通道（第N章/第三十七章/Ch 40） | search.extract_chapter_nos + storage.chapter_search | chapter_channel=True | ✅ 已实现（小说实证 0/4→4/4） | W3 | test_review_fixes |
 | 实体特征通道 | storage.entity_search | entity_channel=False（默认关） | ✅ 代码保留/默认关（A/B Δ=0） | W3 回基线 | test_review_fixes::TestFeatureCueChannel |
-| 异步增强双阶段 Add | enhancer.py + pipeline daemon 线程 | async_enhance_enabled=True | ✅ 已实现（方案 A daemon；进程退出丢结果 = P1-5 待办） | W3 | test_enhancer |
+| 异步增强双阶段 Add（drain 收尾 + 场景一致） | enhancer.py（track/wait_enhance_threads）+ pipeline 登记；facade.close/server lifespan drain | async_enhance_enabled=True；scene 决定 schema | ✅ 已实现；P1-5（2026-09-06）线程可优雅收尾、Enhancer schema 从 settings.scene 解析 | W3/P1-5 | test_p2_5_p1_5.py |
 | 小说适配器（实体消歧/生命周期/文风/守卫） | modules/novel_adapter.py | novel_adapter_enabled=False（参赛关）；adapter_* 分开关 | ✅ 已实现 | 双闭环 | test_cast/test_lifecycle_engine/test_relations；小说 208 章实测 |
-| lifecycle guard 警告进 content | novel_adapter.guard_lifecycle | adapter_lifecycle_guard=True | ⚠️ 已实现但 P2-5 未修（污染证据原文纯度；参赛默认关故不触发） | P2-5 | — |
+| lifecycle guard 警告 → 独立字段 | novel_adapter.guard_lifecycle → SearchResult.warnings（exclude=True） | adapter_lifecycle_guard=True | ✅ 已实现；P2-5（2026-09-06）content 保持证据原文纯度，警告独立可读 | P2-5 | test_p2_5_p1_5.py |
 | LLM 韧性（超时/重试/熔断/降级） | llm/resilience.py + /health llm_resilience | llm_retry_max 等 | ✅ 已实现 | W2 | test_llm_resilience |
 | 任务流水 journal（app/eval/off 脱敏） | journal.py；pipeline/search 写入 | journal_mode | ✅ 已实现 | W2 | test_journal |
 | scope 元数据/TTL 登记 | storage.record_scope（run_add 内自动） | source=eval if journal_mode=eval | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract::test_ttl |

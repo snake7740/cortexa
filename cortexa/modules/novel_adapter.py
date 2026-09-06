@@ -428,10 +428,9 @@ class NovelAdapter:
     ) -> list[SearchResult]:
         """检查返回结果中是否涉及 EXITED/DESTROYED 实体。
 
-        如有，在 SearchResult.content 文本末尾追加警告标记。
-        不删除结果（precision-first：给写作系统判断权）。
-        注意：P2-5 已登记——警告进 content 会污染「返回证据原文」纯度，参赛部署
-        adapter 默认关闭故不触发；修复方向是把标记移入独立提示面（待 A/B）。
+        P2-5（2026-09-06）：警告放入 SearchResult.warnings（独立字段，序列化
+        exclude=True），content 保持「返回证据原文」纯度——写作系统/答案模型读到
+        的永远是原文；需要判断权的消费者读 r.warnings。不删除结果（precision-first）。
         """
         # 获取所有 EXITED/DESTROYED 实体
         exited = self._get_exited_entities(scope)
@@ -442,18 +441,12 @@ class NovelAdapter:
         for r in results:
             warning_parts: list[str] = []
             for name, status, last_ch in exited:
-                if name in r.memory:
+                if name in r.content:
                     warning_parts.append(
                         f"⚠️ [{name}] 状态={status.value}，最后出现于Ch{last_ch}"
                     )
             if warning_parts:
-                warning = "\n" + "\n".join(warning_parts)
-                guarded.append(SearchResult(
-                    id=r.id,
-                    content=r.content + warning,
-                    score=r.score,
-                    created_at=r.created_at,
-                ))
+                guarded.append(r.model_copy(update={"warnings": warning_parts}))
             else:
                 guarded.append(r)
 

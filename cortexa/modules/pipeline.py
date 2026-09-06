@@ -180,6 +180,9 @@ def run_add(
                     stats.inc("enhance", err=_exc)
 
             _th.Thread(target=_enhance_worker, daemon=True).start()
+            # P1-5：登记线程供门面/服务优雅收尾 drain（进程退出不再静默丢结果）
+            from ..enhancer import track_enhance_thread
+            track_enhance_thread(_th)
         except Exception as _exc:  # noqa: BLE001
             from ..enhance_stats import stats
             stats.inc("enhance_spawn", err=_exc)

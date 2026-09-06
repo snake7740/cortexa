@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 
 from .config import Settings
 from .domain.cast import CastRegistry
@@ -41,7 +42,8 @@ class Enhancer:
         self._store = store
         self._llm = llm
         self._settings = settings
-        self._schema = schema or get_schema("novel")
+        # P1-5（2026-09-06）：schema 从 settings.scene 解析（此前默认 novel，AML 场景漂移）
+        self._schema = schema or get_schema(self._settings.scene)
         self._fx = FactExtractor(self._schema)
         # 已知实体（Cast/角色名单）；缺省从 schema.characters+aliases 取（场景驱动）
         if entities is not None:
@@ -135,3 +137,25 @@ class Enhancer:
 
         self._enhanced_ids.add(mem.id)
         return result
+# ---------------------------------------------------------------------------
+# 增强线程注册与优雅收尾（P1-5，2026-09-06）
+# ---------------------------------------------------------------------------
+
+_ACTIVE: list[threading.Thread] = []
+_ACTIVE_LOCK = threading.Lock()
+
+
+def track_enhance_thread(t: threading.Thread) -> None:
+    """登记一个增强后台线程（服务/门面关闭时 drain，避免进程退出丢结果）。"""
+    with _ACTIVE_LOCK:
+        _ACTIVE.append(t)
+
+
+def wait_enhance_threads(timeout_s: float = 3.0) -> int:
+    """等待已登记的增强线程收尾；返回仍存活的线程数（超时未完成的明确丢弃并计数）。"""
+    with _ACTIVE_LOCK:
+        pending = list(_ACTIVE)
+        _ACTIVE.clear()
+    for t in pending:
+        t.join(timeout=timeout_s / max(len(pending), 1))
+    return sum(1 for t in pending if t.is_alive())

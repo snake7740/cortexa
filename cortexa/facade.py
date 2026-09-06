@@ -443,6 +443,12 @@ class Cortexa:
         }
 
     def close(self) -> None:
+        # P1-5：先 drain 增强线程（它们要写 store），再关库
+        try:
+            from .enhancer import wait_enhance_threads
+            wait_enhance_threads()
+        except Exception:
+            pass
         self._store.close()
 
     def __enter__(self) -> Cortexa:

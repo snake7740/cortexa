@@ -19,7 +19,9 @@
 
 **P1-6 ✅（2026-09-06）**：最小 stability 增长落地（S'=S×1.15，封顶 3650d；测试 3 项）。
 
-**仍 open（按原台账执行）**：P1-1/2/3/4/5a/7；P2-1/2/5/6/7；P3-1。详细现状见 docs/mechanism-status.md（单一事实源）。
+**P1-1/P1-2/P1-5/P2-5 ✅（2026-09-06）**：touch 批量单查询单事务（hotpath 测试）；治理 find_conflicts 单次全行查询（语义 1:1）；增强线程 drain 收尾 + Enhancer schema 场景一致；守卫警告移入 SearchResult.warnings（exclude，content 纯度）。
+
+**仍 open（按原台账执行）**：P1-3（openai embed deadline，比赛向后置）；P2-1/2/6/7；P3-1。详细现状见 docs/mechanism-status.md（单一事实源）。
 
 ---
 

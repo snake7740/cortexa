@@ -91,6 +91,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if swept:
                 logger.info("30 天 TTL 清扫（startup）：%d 个过期 eval scope 已删除", len(swept))
         yield
+        # P1-5：服务退出前 drain 增强线程（写库需在 store.close 之前完成）
+        try:
+            from .enhancer import wait_enhance_threads
+            wait_enhance_threads()
+        except Exception:
+            pass
         store.close()
 
     app = FastAPI(

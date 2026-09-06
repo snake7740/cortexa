@@ -267,6 +267,11 @@ class SearchResult(BaseModel):
     )
     score: float = 0.0  # 官方：可选，数值越大相关性越高
     created_at: str | None = None  # 官方：可选，ISO8601 UTC 来源/持久化时间
+    warnings: list[str] = Field(
+        default_factory=list, exclude=True, repr=False,
+        description="P2-5（2026-09-06）：领域守卫警告放独立字段，content 保持证据原文纯度；"
+        "exclude=True 使序列化（官方 data 元素）不含该字段。",
+    )
 
     @property
     def memory(self) -> str:  # 旧消费方兼容（facade/checkup/novel_adapter 曾读 .memory）
@@ -388,4 +393,3 @@ class StyleProfile(BaseModel):
     rhetoric_density: float = 0.0
     pov: str = "third_limited"
     sample_sentences: list[str] = Field(default_factory=list)
-
