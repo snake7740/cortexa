@@ -1,6 +1,6 @@
 # Cortexa 机制状态总表（单一事实源）
 
-> 版本 v2.0 | 更新 2026-09-06（对照核查修复批 P2-5b 落地后刷新，259 passed 口径）| 维护规则：**任何机制/开关/契约改动必须同步本表**；
+> 版本 v3.0 | 更新 2026-09-06（第二期技术批 T/G/A/B/E 系列后刷新）| 维护规则：**任何机制/开关/契约改动必须同步本表**；
 > 排期词汇与 README 里程碑一致（P3/P4 = 未实现阶段承诺，如实标注，禁止提前宣称）。
 > 取代：Cortexa 根目录 `Cortexa_仿生AI记忆系统_完整项目文档.docx`（2026-08-29 规格，已归档为设计史参考——其包结构 consolidation.py/forgetting.py、选型 Qdrant/Neo4j/PostgreSQL、LLM gpt-4o 均非现实）。
 
@@ -52,3 +52,23 @@
 
 - 官方契约词：user_id（检索隔离）↔ 内部 scope（同义，HTTP 层收口）；data/content/created_at（Search 响应）↔ 旧 results/memory/timestamp（仅内部属性兼容）；
 - session_id 仅分组不做隔离；RULE=规则类永不衰减；retcon=修正链；TTL=30 天合规清扫。
+- RARE 术语（T3.3）：RARE=完整四步重编码(P4 未实现)；RARE-lite=检索后两两写回(已实现, novel_adapter_enabled 门控)。
+
+## 补录 v3（2026-09-06 第二期技术批，均为默认关/实验件）
+
+| 机制 | 开关 | 测试 |
+|---|---|---|
+| 会话级 RRF(cluster boost, H1) | session_rrf_enabled | tests/test_t1_features.py |
+| 确定性查询规划(J1, entity 通道) | query_plan_enabled | tests/test_t1_features.py |
+| 相对时间锚定解析(F2) | time_anchor_enabled(解析器模块) | tests/test_t1_features.py |
+| soft-supersede(B2) | governance_soft_enabled | tests/test_governance_precision.py |
+| 选择题 options 拼接查询(G1) | 随 options 字段自动 | tests/test_search_options.py |
+| token 等预算审计(T2.3) | aml_replay --token-cap | 工具 |
+| recall_miss 卡(T2.4) | aml_replay 自动落盘 | 工具 |
+| InMind 路由门(T2.2) | examples/convert_inmind.py | 数据 125 题 data/aml-materials |
+| judge v1 判答夹具(T2.1) | examples/judge_v1.py(需 key) | --check-offline |
+| stress_smoke(T3.1) | examples/stress_smoke.py | 基线 add p95 108ms/search 10ms |
+| 检索质量回归门(A1) | scripts/retrieval_gate.py | baseline json+测试 |
+| 本地回放器(A2/B/E 系列) | examples/aml_replay.py + convert_* | tests/test_aml_replay.py |
+
+> 版本升 v3.0（第二期技术批）；质量闸随全量 pytest 绿。
