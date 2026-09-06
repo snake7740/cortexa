@@ -147,6 +147,9 @@ def search_memory(
         # 语义软通道（独立表 1024）+ 并行补跑 hash 向量通道（512 存量矩阵）——
         # hybrid A/B 实证：只留语义会让「主线」类总结题回退（hash 通道丢了）；
         # 双通道并存由 RRF 天然降权，各自补位。
+        # 语义模式小改（2026-09-06，单点可回退）：候选不足是弱题漏检主因——
+        # 仅在语义通道开启时把 FTS 候选加宽到 80 并入融合；hash 默认路径零改动。
+        _merge(store.fts_search(query, scope, limit=80))
         sem_mems = store.sem_search(
             llm.embed([query])[0], scope, limit=settings.semantic_candidates,
             min_cos=settings.vector_min_cos,
