@@ -1,6 +1,6 @@
 """FactExtractor 单测：语境分层（NARRATION/QUOTE/RECALL）防引用误报。"""
 
-from cortexa.domain.facts import FactExtractor, NARRATION, QUOTE, RECALL, REPORT
+from cortexa.domain.facts import QUOTE, RECALL, FactExtractor
 from cortexa.schema import get_schema
 
 

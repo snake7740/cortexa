@@ -30,11 +30,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # import local_eval
 
-import local_eval  # noqa: E402  (复用 SESSIONS/ANSWERABLE/run_eval 定义)
+import local_eval
+from fastapi.testclient import TestClient
 
-from fastapi.testclient import TestClient  # noqa: E402
-from cortexa.config import Settings  # noqa: E402
-from cortexa.server import create_app  # noqa: E402
+from cortexa.config import Settings
+from cortexa.server import create_app
 
 
 def _run_e_personalization(data_dir: Path) -> tuple[int, int]:

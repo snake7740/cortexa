@@ -8,9 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cortexa.config import Settings
+from cortexa.models import MemoryInstance, MemoryType, content_hash
 from cortexa.server import create_app
 from cortexa.storage import RuleImmortalError, SQLiteMemoryStore
-from cortexa.models import MemoryInstance, MemoryType, content_hash
 
 
 @pytest.fixture()
@@ -142,8 +142,9 @@ def test_supersede_marks_old_state_with_valid_to(tmp_path: Path) -> None:
 
 def test_fsrs_retrievability_formula() -> None:
     """R(t) = (1 + t/(9*S))^(-1)（业务文档 8.1）。"""
-    from cortexa.models import FSRSState
     import time as _t
+
+    from cortexa.models import FSRSState
 
     state = FSRSState(stability=1.0, last_review_at=_t.time())
     now = state.last_review_at + 9 * 86400  # 恰好 9*S 天

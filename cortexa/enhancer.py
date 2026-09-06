@@ -68,7 +68,6 @@ class Enhancer:
 
     def infer_relations(self, mem: MemoryInstance, chapter: int | None) -> list[dict]:
         """用 schema 关系句式找显式关系（A/B 必须是已知实体）。"""
-        from .modules import graph as _graph
         found: list[dict] = []
         if not self._entities or chapter is None:
             return found

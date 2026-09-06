@@ -62,7 +62,7 @@ def test_infer_relation_adds_link(tmp_path: Path) -> None:
     links = store.connection.execute(
         "SELECT src, dst, link_type FROM links WHERE scope = ? AND status = ?", ("s", "ACTIVE"),
     ).fetchall()
-    assert any(l["src"] == "叶长生" and l["dst"] == "沈渊" for l in links)
+    assert any(x["src"] == "叶长生" and x["dst"] == "沈渊" for x in links)
     store.close()
 
 

@@ -1,10 +1,12 @@
 """RelationInferrer 单测：显式关系提取（防幻觉约束）。"""
 
+import os
+import tempfile
+
 from cortexa.config import Settings
 from cortexa.llm import LLMClient
 from cortexa.modules.novel_adapter import NovelAdapter
 from cortexa.storage import SQLiteMemoryStore
-import tempfile, os
 
 
 def _adapter():

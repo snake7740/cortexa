@@ -25,10 +25,9 @@ from typing import Any
 
 from ..config import Settings
 from ..llm import LLMClient
-from ..schema import SceneSchema, get_schema
 from ..models import (
-    EntityType,
     EntitySnapshot,
+    EntityType,
     LifecycleEvent,
     LifecycleStatus,
     MemoryInstance,
@@ -36,6 +35,7 @@ from ..models import (
     SearchResult,
     StyleProfile,
 )
+from ..schema import SceneSchema, get_schema
 from ..storage import MemoryStore
 
 # ---------------------------------------------------------------------------

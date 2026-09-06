@@ -3,7 +3,6 @@
 import pytest
 
 from cortexa.schema import (
-    NOVEL_SCHEMA,
     SceneSchema,
     get_schema,
     register_schema,

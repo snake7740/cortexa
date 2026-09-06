@@ -24,7 +24,6 @@ from cortexa.modules.rule_wing import classify, classify_message, route_wing
 from cortexa.modules.search import search_memory
 from cortexa.storage import RuleImmortalError, SQLiteMemoryStore
 
-
 # ---------------------------------------------------------------------------
 # rule_wing：识别分流
 # ---------------------------------------------------------------------------

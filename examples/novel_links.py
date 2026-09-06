@@ -20,7 +20,7 @@ os.environ.pop("OPENAI_API_KEY", None)  # 本地零 API
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 自足：不依赖 cwd/PYTHONPATH
 
-from cortexa import Cortexa  # noqa: E402
+from cortexa import Cortexa
 
 # 基数声明：数字 1 标记受限端（该端每个实体至多一条活跃边）
 LINK_TYPES = {

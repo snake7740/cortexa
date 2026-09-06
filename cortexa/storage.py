@@ -176,7 +176,7 @@ _FTS_EN_STOP = frozenset({
     "as", "into", "over", "under", "than", "then", "and", "or", "but",
     "if", "else", "so", "too", "also", "very", "just",
     # 通用疑问句填充词（低信息）
-    "the", "doe", "does", "did", "done", "want", "know", "tell", "please",
+    "doe", "done", "want", "know", "tell", "please",
 })
 
 

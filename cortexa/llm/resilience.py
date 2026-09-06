@@ -14,10 +14,10 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
-
 
 # ---------------------------------------------------------------------------
 # 观测计数
@@ -83,8 +83,6 @@ class ResilienceStats:
 # ---------------------------------------------------------------------------
 # 重试错误分类
 # ---------------------------------------------------------------------------
-
-import re
 
 # 独立状态码检测（避免 "503" 嵌入长串时漏检/误检；429/5xx 视为可重试）
 _HTTP_RETRY = re.compile(r"(^|[^0-9])(429|500|502|503|504)([^0-9]|$)")
@@ -278,7 +276,7 @@ class ResilienceRunner:
                 time.sleep(backoff / 1000.0)
             try:
                 val = fn()
-            except Exception as exc:  # noqa: BLE001 - 韧性层吞异常转结果
+            except Exception as exc:
                 latency = (time.monotonic() - started) * 1000
                 timed_out = latency >= timeout_s * 1000 or "timeout" in str(exc).lower()
                 self.breaker.record_failure()

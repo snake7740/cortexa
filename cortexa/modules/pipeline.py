@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import re as _re
 
+from ..config import Settings
+from ..journal import TaskJournal
+from ..llm import LLMClient
 from ..models import AddRequest, AddResponse, MemoryInstance
+from ..storage import MemoryStore
 from .dimension_floor import assert_floor, enforce
 from .encoding import encode_message
 from .rule_wing import classify_message
-from ..journal import TaskJournal
-from ..llm import LLMClient
-from ..config import Settings
-from ..storage import MemoryStore
 
 
 def run_add(
@@ -128,8 +128,8 @@ def run_add(
 
         # 4. 关系自动建边（RelationInferrer，默认关闭需显式开启）
         if settings.relation_inferrer and _chapter is not None:
-            from . import graph as _graph
             from ..models import EntityType as _ET
+            from . import graph as _graph
             # 已知实体 = 已注册的 CHARACTER（不发明实体，防幻觉）
             _known = [
                 r[0] for r in store.connection.execute(

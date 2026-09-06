@@ -37,7 +37,7 @@ os.environ.pop("OPENAI_API_KEY", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 自足：不依赖 cwd/PYTHONPATH
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # 复用同目录 novel_ingest
 
-from novel_ingest import ingest_all  # noqa: E402
+from novel_ingest import ingest_all
 
 DEFAULT_SUBJECTS = ("叶长生", "苏晚晴", "秦洛")
 DEFAULT_ITEMS = ("黑色木牌",)
@@ -151,7 +151,7 @@ def cmd_status(root: Path, scope: str) -> int:
                 by_kind[i.kind] = by_kind.get(i.kind, 0) + 1
             kind_txt = "、".join(f"{k}×{v}" for k, v in sorted(by_kind.items())) or "无"
             lines.append(f"- 记忆混乱度（{len(DEFAULT_SUBJECTS)} 实体审计异常）：{kind_txt}")
-            lines.append(f"- 最近 sync/audit 报告见 `cortexa-out/`（异常详情跑 `audit` 子命令）")
+            lines.append("- 最近 sync/audit 报告见 `cortexa-out/`（异常详情跑 `audit` 子命令）")
     lines.append("")
 
     # 4) 产出归位

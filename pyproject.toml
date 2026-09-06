@@ -28,3 +28,12 @@ include = ["cortexa*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["_archive", ".novel_probe_root", ".backups"]
+
+[tool.ruff.lint]
+# 闸门收敛到真错误/死代码类（E4/E7/E9=Fatal、F=pyflakes、I=import 排序）；
+# 风格大类（B/SIM/UP/RUF 全角标点）与中文注释工作语言冲突，留作未来非阻塞饮食。
+select = ["E4", "E7", "E9", "F", "I"]

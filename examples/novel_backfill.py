@@ -39,7 +39,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cortexa.config import Settings
 from cortexa.domain import CastRegistry
-from cortexa.schema import get_schema
 from cortexa.llm import LLMClient
 from cortexa.models import (
     EntityType,
@@ -48,7 +47,9 @@ from cortexa.models import (
     ResolvedEntity,
 )
 from cortexa.modules.novel_adapter import NovelAdapter
+from cortexa.schema import get_schema
 from cortexa.storage import SQLiteMemoryStore
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="存量生命周期回填（register + track）")

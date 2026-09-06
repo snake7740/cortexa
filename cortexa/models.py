@@ -22,7 +22,6 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-
 # ---------------------------------------------------------------------------
 # 领域枚举
 # ---------------------------------------------------------------------------
@@ -75,7 +74,7 @@ def new_id() -> str:
 
 def content_hash(scope: str, content: str) -> str:
     """SHA-256 去重指纹：scope 内去重（业务文档 7.1 L2 感官过滤）。"""
-    return hashlib.sha256(f"{scope}\x00{content}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{scope}\x00{content}".encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------

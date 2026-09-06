@@ -91,8 +91,10 @@ def test_err_classification():
 
 def test_stats_snapshot():
     s = ResilienceStats()
-    s.record_call(); s.record_success(10.0)
-    s.record_call(); s.record_failure(timeout=True)
+    s.record_call()
+    s.record_success(10.0)
+    s.record_call()
+    s.record_failure(timeout=True)
     snap = s.snapshot()
     assert snap["llm_calls"] == 2
     assert snap["llm_successes"] == 1

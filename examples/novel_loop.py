@@ -26,7 +26,7 @@ os.environ.pop("OPENAI_API_KEY", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 自足：不依赖 cwd/PYTHONPATH
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from novel_ingest import ingest_all  # noqa: E402
+from novel_ingest import ingest_all
 
 SUBJECTS = ("叶长生", "苏晚晴", "秦洛")
 ITEMS = ("黑色木牌",)

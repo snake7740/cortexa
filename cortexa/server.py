@@ -26,8 +26,6 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
-logger = logging.getLogger("cortexa.server")
-
 from . import __version__
 from .config import Settings, get_settings
 from .journal import TaskJournal
@@ -37,6 +35,7 @@ from .modules.pipeline import run_add
 from .modules.search import search_memory
 from .storage import SQLiteMemoryStore
 
+logger = logging.getLogger("cortexa.server")
 
 # ---------------------------------------------------------------------------
 # 认证依赖（官方 Authentication：No authentication / Memory API Key）

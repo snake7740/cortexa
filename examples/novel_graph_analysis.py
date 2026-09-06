@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import statistics
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -40,7 +39,7 @@ _NAME_STOP = {
     "身上", "手里", "眼里", "心里", "路上", "门外", "屋里", "城里",
     "天下", "人间", "眼前", "身后", "面前", "手中", "对方", "东西",
     "事情", "消息", "声音", "脚步", "目光", "眼神", "脸色", "口气",
-    "样子", "地方", "方向", "时候", "时辰", "功夫", "本事", "法子",
+    "样子", "地方", "方向", "时辰", "功夫", "本事", "法子",
 }
 
 _CH_DIR = ("废灵根", "正文", "chapters")

@@ -133,7 +133,7 @@ class TestEntityHistory:
         assert len(hist["retcons"]) == 1
         assert hist["retcons"][0]["chapter"] == 7
         assert hist["retcons"][0]["reason"] == "笔误修正"
-        assert [l["link_type"] for l in hist["links"]] == ["亲生父亲"]
+        assert [ln["link_type"] for ln in hist["links"]] == ["亲生父亲"]
 
     def test_retcon_filtered_by_subject(self, cm: Cortexa) -> None:
         s = "novel"

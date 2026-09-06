@@ -49,6 +49,10 @@ def test_rare_links_same_topic_results(tmp_path: Path) -> None:
     if b in got:
         assert b in ra.links
         assert a in rb.links
+    # 隔离性：c 与 Alice 无关且未进结果时，不应被 RARE 关联（RARE 只关联命中项）
+    rc = store.get(c, scope)
+    if rc is not None and c not in got:
+        assert c not in ra.links
 
 
 def test_rare_idempotent_no_duplicate(tmp_path: Path) -> None:

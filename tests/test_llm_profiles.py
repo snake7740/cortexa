@@ -1,7 +1,6 @@
 """ModelProfile 档案单测：解析/参数适配/内容提取（无网络）。"""
 
 from cortexa.llm.profiles import (
-    PROFILES,
     build_chat_kwargs,
     extract_content,
     resolve_profile,

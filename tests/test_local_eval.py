@@ -54,7 +54,7 @@ def test_local_eval_hit5_not_below_floor() -> None:
     """
     proc = _run(["--no-ablation"])
     assert proc.returncode == 0, proc.stderr[-2000:]
-    line = next(l for l in proc.stdout.splitlines() if "entity_channel=on" in l)
+    line = next(ln for ln in proc.stdout.splitlines() if "entity_channel=on" in ln)
     hit5 = float(line.split(" | ")[2])
     assert hit5 >= 0.9, f"Hit@5={hit5} 跌破 0.9 下限——检索回归"
 
@@ -68,7 +68,7 @@ def test_local_eval_governance_dimension_full_green() -> None:
     """
     proc = _run(["--no-ablation"])
     assert proc.returncode == 0, proc.stderr[-2000:]
-    line = next(l for l in proc.stdout.splitlines() if "entity_channel=on" in l)
+    line = next(ln for ln in proc.stdout.splitlines() if "entity_channel=on" in ln)
     cols = dict(zip(
         [c.strip() for c in proc.stdout.splitlines()[
             proc.stdout.splitlines().index(line) - 1].split("|")],

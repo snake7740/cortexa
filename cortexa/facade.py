@@ -23,16 +23,18 @@ from uuid import uuid4
 from .config import Settings
 from .journal import TaskJournal
 from .llm import LLMClient
-from .models import AddRequest, AddResponse, AmlMessage, content_hash, SearchResult
+from .models import AddRequest, AddResponse, AmlMessage, SearchResult, content_hash
 from .modules import graph as _graph
+from .modules.checkup import CheckupReport, run_checkup
 from .modules.consistency import (
-    AuditReport,
-    audit as run_audit,
-    build_state_line,
     DEFAULT_SCALE,
+    AuditReport,
+    build_state_line,
+)
+from .modules.consistency import (
+    audit as run_audit,
 )
 from .modules.pipeline import run_add
-from .modules.checkup import CheckupReport, run_checkup
 from .modules.search import search_memory
 from .storage import SQLiteMemoryStore
 
@@ -429,21 +431,21 @@ class Cortexa:
             "retcons": sorted(retcons, key=lambda r: (r["chapter"] or 0, r["ts_ms"])),
             "links": [
                 {
-                    "src": l.src,
-                    "dst": l.dst,
-                    "link_type": l.link_type,
-                    "status": l.status,
-                    "evidence": l.evidence,
-                    "evidence_chapter": l.evidence_chapter,
+                    "src": ln.src,
+                    "dst": ln.dst,
+                    "link_type": ln.link_type,
+                    "status": ln.status,
+                    "evidence": ln.evidence,
+                    "evidence_chapter": ln.evidence_chapter,
                 }
-                for l in _graph.link_history(conn, scope, subject)
+                for ln in _graph.link_history(conn, scope, subject)
             ],
         }
 
     def close(self) -> None:
         self._store.close()
 
-    def __enter__(self) -> "Cortexa":
+    def __enter__(self) -> Cortexa:
         return self
 
     def __exit__(self, *_exc: object) -> None:

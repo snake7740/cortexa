@@ -13,7 +13,6 @@ Schema 是纯数据 + 校验；抽取算法在 L2（domain），内核（L1）�
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 

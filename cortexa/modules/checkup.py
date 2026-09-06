@@ -17,12 +17,12 @@ from dataclasses import asdict, dataclass, field
 
 from ..config import Settings
 from ..journal import TaskJournal
+from ..llm import LLMClient
 from ..models import FSRSState, MemoryType
 from ..storage import MemoryStore, SQLiteMemoryStore
 from .consistency import audit as run_audit
 from .dimension_floor import assert_floor
 from .search import search_memory
-from ..llm import LLMClient
 
 
 @dataclass
