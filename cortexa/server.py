@@ -28,11 +28,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
 from . import __version__
 from .config import Settings, get_settings
+from .enhance_stats import stats as enhance_stats
 from .journal import TaskJournal
 from .llm import LLMClient
 from .models import AddRequest, AddResponse, SearchRequest, SearchResponse
 from .modules.pipeline import run_add
-from .enhance_stats import stats as enhance_stats
 from .modules.search import search_memory
 from .storage import SQLiteMemoryStore
 
