@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     recency_arbitration_enabled: bool = False
     recency_arbitration_weight: float = 1.0
     recency_arbitration_top_n: int = 50
+    # C4（temporal_conflict_eval_v1，2026-09-06）：簇内保留最新 + 至多 keep_prev 个
+    # 最近旧版本（predecessor），更旧版本从返回中剔除——对照 C3 reorder-only 的
+    # 列表污染/版本史膨胀面。0=reorder only（现状）。默认 0。
+    recency_arbitration_keep_prev: int = 0
     vector_min_cos: float = 0.05  # 语义通道相关性下限：低于此值不进入融合（precision-first）
     # hash 嵌入专用下限（2026-09-04 维度 G 修复）：hash 词袋余弦 = 词重叠比例，
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。

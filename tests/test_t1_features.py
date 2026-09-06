@@ -84,3 +84,38 @@ def test_f2_calendar_arithmetic_month_leap() -> None:
     o = parse_relative_time("2 weeks ago", ref_of(2026, 5, 31))
     ts = next(t for t, c in o if c.startswith("rel:2 weeks ago"))
     assert abs((ref_of(2026, 5, 31) - ts) - 14 * 86_400_000) < 1000
+
+
+def test_f2_relative_window_calendar_bounds() -> None:
+    """temporal_conflict_eval_v1：相对时间窗（F2 检索侧消费）日历边界正确。"""
+    from datetime import datetime, timezone
+
+    def date_of(ms: int):
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).date()
+
+    def ref(y, mo, d): return int(datetime(y, mo, d, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+    from cortexa.modules.time_anchor import relative_cue, relative_window
+
+    # last month：now=2026-04-10 → 2026-03 整月（30 天近似 03-11 起会错）
+    w0, w1 = relative_window(ref(2026, 4, 10), "month", 1)
+    assert (date_of(w0).year, date_of(w0).month, date_of(w0).day) == (2026, 3, 1)
+    assert (date_of(w1).year, date_of(w1).month, date_of(w1).day) == (2026, 3, 31)
+
+    # 闰月：last month now=2024-04-30 → 2024-03（02-29 事件不在内）
+    w0, w1 = relative_window(ref(2024, 4, 30), "month", 1)
+    assert date_of(w0).month == 3 and date_of(w1).month == 3
+
+    # 跨年：last year now=2026-01-05 → 2025-01-01..2025-12-31
+    w0, w1 = relative_window(ref(2026, 1, 5), "year", 1)
+    assert (date_of(w0).year, date_of(w0).month, date_of(w0).day) == (2025, 1, 1)
+    assert date_of(w1).year == 2025 and date_of(w1).month == 12
+
+    # N months ago 数值形态：3 months ago now=2026-04-10 → 2026-01
+    w0, w1 = relative_window(ref(2026, 4, 10), "month", 3)
+    assert date_of(w0).month == 1 and date_of(w1).month == 1
+
+    # 线索提取：只认明确相对表达，不带年份的普通问句不猜
+    assert relative_cue("Who did Alice meet last month?") == ("month", 1)
+    assert relative_cue("What did Alice do last year?") == ("year", 1)
+    assert relative_cue("Where does Alice currently live?") is None  # 无相对线索不动

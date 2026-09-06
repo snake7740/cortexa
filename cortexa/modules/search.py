@@ -257,11 +257,30 @@ def search_memory(
         _years = year_cues(eff_query)
         if _years:
             scored = apply_year_filter(scored, _years, set())
+    if settings.time_anchor_enabled:
+        # F2 检索侧（默认关，temporal_conflict_eval_v1）：相对时间窗过滤——query 带
+        # last month/上个月/N months ago/last year/昨天 等线索时，按日历窗口
+        # （month/year 整单位、day/week 自然日）过滤候选。ref = scope 内最新消息
+        # 时间（消息陈述即事件时刻的语料语义）；无线索 = 原样返回。
+        from .time_anchor import apply_relative_window
+        try:
+            _ref_ms = store.connection.execute(
+                "SELECT MAX(COALESCE(event_ts_ms, created_ts_ms)) "
+                "FROM memories WHERE scope = ?", (scope,),
+            ).fetchone()[0]
+        except Exception:  # noqa: BLE001 —— 查询失败按无过滤处理（观察面）
+            _ref_ms = None
+        if _ref_ms:
+            scored = apply_relative_window(scored, query, _ref_ms)
     if settings.recency_arbitration_enabled:
         # recency-arbitrated retrieval（默认关）：冲突簇内显式重排为最新在前
-        # （排序与时间过滤之后执行，避免被 sort 覆盖）
+        # （排序与时间过滤之后执行，避免被 sort 覆盖）。keep_prev>0=C4：簇内
+        # 保留最新+最近 predecessor，更旧版本剔除（防列表题版本史污染）。
         from .recency_arbitration import arbitrate
-        scored = arbitrate(scored, top_n=settings.recency_arbitration_top_n)
+        scored = arbitrate(
+            scored, top_n=settings.recency_arbitration_top_n,
+            keep_prev=settings.recency_arbitration_keep_prev,
+        )
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关

@@ -53,6 +53,28 @@ def _terms(mem: MemoryInstance) -> set[str]:
             and w not in subj_toks}
 
 
+# 属性状态动词/短语（v3，2026-09-06）：证明两句谈同一属性的更新——主语本人
+# 属性的『值』随版本变化（住所/雇主/颜色/供应商）。与 _GENERIC 的差别：v3 不再
+# 把这类动词一律当噪声，而是『短语命中 + 值实体不同 + 非属格转移』三者同判，
+# 既保住 Seattle/Boston 类真冲突，又挡下 "Alice works at Google" vs
+# "Alice's brother works at Microsoft"（brother 句含属格转移，subject 实为兄弟）。
+_ATTR_PHRASES = (
+    "moved to", "living in", "lives in", "works at", "working at", "work at",
+    "joined", "selected", "favorite", "favourite", "prefers", "preferred",
+    "currently", "likes", "liked", "started at", "bought", "adopted",
+    "changed", "switched to", "is now", "has been", "upgraded", "renamed",
+)
+
+
+def _attr_statement(mem: MemoryInstance) -> bool:
+    """主语本人属性的状态陈述：无『subject's X』属格转移且命中属性短语。"""
+    low = (mem.content or "").lower()
+    s = subject_of(mem)
+    if s and s.split()[0] + "'s" in low:
+        return False  # "alice's brother/mail/office..." 属性属于他人
+    return any(p in low for p in _ATTR_PHRASES)
+
+
 def _attr(mem: MemoryInstance) -> set[str]:
     s = subject_of(mem)
     return {e.lower() for e in (mem.entities or []) if e.lower() != s}
@@ -74,31 +96,56 @@ def _slot(mem: MemoryInstance) -> str | None:
 
 
 def _conflict(a: MemoryInstance, b: MemoryInstance) -> bool:
-    """高置信冲突（v2）：共享非主体实体 / 同属性槽 / 共享属性相关词，三者任一。"""
+    """高置信冲突（v3，temporal_conflict_eval_v1）：四信号任一。
+
+    1) 共享非主体实体（同值实体——同属性同值非冲突但同槽高频）；
+    2) 同属性槽（entities[1]/topic）；
+    3) 双方都是『主语本人属性状态陈述』且值实体不同（住所/雇主版本史）；
+    4) 共享属性相关词（兜底，如 favorite/color）。
+    属格转移（alice's brother works at microsoft）挡在 _attr_statement 层。
+    """
     if bool(_attr(a) & _attr(b)):
         return True
     ka, kb = _slot(a), _slot(b)
     if ka and ka == kb:
         return True
+    va, vb = _attr(a), _attr(b)
+    if (va and vb and va != vb and _attr_statement(a) and _attr_statement(b)):
+        return True
     return bool(_terms(a) & _terms(b))
 
 
-def arbitrate(scored: list, top_n: int = 50) -> list:
-    """簇内按事件时间显式重排(最新在前)；无冲突簇不动；返回新列表。"""
-    out = list(scored)
+def _conflicted_clusters(scored: list, top_n: int) -> list[tuple[int, ...]]:
+    """返回需要仲裁的冲突簇（位置元组，含 ≥2 成员、存在冲突对、时间可分）。"""
     clusters: dict[str, list[int]] = {}
-    for i, (mem, _s) in enumerate(out[:top_n]):
+    for i, (mem, _s) in enumerate(scored[:top_n]):
         s = subject_of(mem)
         if s:
             clusters.setdefault(s, []).append(i)
+    conflicted: list[tuple[int, ...]] = []
     for idxs in clusters.values():
         if len(idxs) < 2:
             continue
-        mems = [out[i][0] for i in idxs]
+        mems = [scored[i][0] for i in idxs]
         if not any(_conflict(mems[a], mems[b])
                    for a in range(len(mems)) for b in range(a + 1, len(mems))):
             continue
         if len({_ts(m) for m in mems}) < 2:
+            continue
+        conflicted.append(tuple(sorted(idxs)))
+    return conflicted
+
+
+def arbitrate(scored: list, top_n: int = 50, keep_prev: int = 0) -> list:
+    """冲突簇内按事件时间重排(最新在前)；无冲突簇不动。
+
+    keep_prev=0：reorder only（所有簇成员保留，仅调序）——C3 档。
+    keep_prev>0：C4 档——簇内只保留最新 + 至多 keep_prev 个最近的 predecessor，
+    更旧版本从返回中剔除（版本史压缩，防列表题 no-extras 污染）。返回新列表。
+    """
+    out = list(scored)
+    for idxs in _conflicted_clusters(out, top_n):
+        if len(idxs) < 2:
             continue
         ordered = sorted(
             [(out[i], i) for i in idxs],
@@ -107,4 +154,33 @@ def arbitrate(scored: list, top_n: int = 50) -> list:
         )
         for pos, (pair, _orig_i) in zip(sorted(idxs), ordered):
             out[pos] = pair
+        if keep_prev > 0:
+            # 剔除按 id 而非位置（重排后下标指向的内容已变化——2026-09-06 实测踩坑；
+            # 注意 ordered 元素=(mem,score,orig_i) 解包后 pair=(mem,score)，mem=pair[0]）
+            keep_ids = {pair[0].id for pair, _i in ordered[:1 + keep_prev]}
+            drop_ids = {pair[0].id for pair, _i in ordered} - keep_ids
+            if drop_ids:
+                out = [x for x in out if x[0].id not in drop_ids]
+                # 列表缩短：后续簇用新列表重扫（递归，drop 为空即终止）
+                return arbitrate(out, top_n=top_n, keep_prev=keep_prev)
+    return out
+
+
+def cluster_report(scored: list, top_n: int = 50) -> list[dict]:
+    """簇观测（temporal_conflict_eval_v1 仪器化）：返回冲突簇成员 id 清单。
+
+    供 false_conflict_rate 统计——truth 表交叉判定哪些簇是真属性冲突、哪些是
+    误聚（非冲突事实进了冲突簇）。
+    """
+    out = []
+    for idxs in _conflicted_clusters(scored, top_n):
+        ordered = sorted(
+            (scored[i][0] for i in idxs),
+            key=lambda m: _ts(m),
+            reverse=True,
+        )
+        out.append({
+            "subject": subject_of(ordered[0]),
+            "members": [m.id for m in ordered],
+        })
     return out
