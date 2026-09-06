@@ -234,25 +234,42 @@ class GovernanceEngine:
         sig = self._signal(text or "")
         return f"{sig[0]}:{sig[1]}" if sig else "supersede-signal"
 
-    def govern(self, new_mem: MemoryInstance, scope: str) -> dict:
+    def govern(self, new_mem: MemoryInstance, scope: str, *,
+              soft: bool = False) -> dict:
         """对新记忆执行治理：找冲突旧记忆，若新陈述取代则 supersede 旧记忆。
 
-        events 逐条落 supersede 审计链（P2-5b，2026-09-06）：old_id/new_id/reason
-        供 pipeline 写 journal——"谁取代了谁、依据什么信号"可追溯（对齐 retcon reason）。
+        soft=True（B2 实验，2026-09-06）：不硬隐藏——旧值 retrieval_weight 降为
+        30% 仍 ACTIVE 可返（对照 AMI『治理价值=改返回集』与 FlowGrid 降权不删）；
+        默认 False=硬隐藏(SUPERSEDED 不进 Search，现行语义)。两种都落 journal 审计链。
         """
         result = {"subject": self._subject_key(new_mem), "superseded": 0, "kept": 0,
                   "events": []}
         for old in self.find_conflicts(new_mem, scope):
             if self.should_supersede(new_mem, old):
                 try:
-                    self._store.supersede(old.id, new_mem.id, scope)
-                    result["superseded"] += 1
-                    result["events"].append({
-                        "old_id": old.id,
-                        "new_id": new_mem.id,
-                        "reason": f"{self._signal_desc(new_mem.content)}|same-attr",
-                    })
-                except Exception as _exc:  # noqa: BLE001 —— supersede 失败转 kept 的分支，进观察面
+                    reason = f"{self._signal_desc(new_mem.content)}|same-attr"
+                    if soft:
+                        with self._store.lock:
+                            self._store.connection.execute(
+                                "UPDATE memories SET retrieval_weight = ? "
+                                "WHERE id = ? AND scope = ?",
+                                (max(0.1, (old.retrieval_weight or 1.0) * 0.3),
+                                 old.id, scope),
+                            )
+                            self._store.connection.commit()
+                        result["events"].append({
+                            "old_id": old.id, "new_id": new_mem.id,
+                            "reason": reason + "|soft",
+                        })
+                        result["kept"] += 1  # soft=不隐藏：统计口径置 kept(仍在库可返)
+                    else:
+                        self._store.supersede(old.id, new_mem.id, scope)
+                        result["superseded"] += 1
+                        result["events"].append({
+                            "old_id": old.id, "new_id": new_mem.id,
+                            "reason": reason,
+                        })
+                except Exception as _exc:  # noqa: BLE001 —— 失败转 kept 的分支，进观察面
                     from ..enhance_stats import stats
                     stats.inc("governance_skip", err=_exc)
                     result["kept"] += 1

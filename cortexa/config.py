@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     # MEMORY_LEXICAL_WEIGHT=0.5，dense 1.0）。改检索行为必须 retrieval_gate 复跑。
     rrf_lexical_weight: float = 1.0   # fts(词法≈BM25) 通道融合权重
     rrf_vector_weight: float = 1.0    # 向量(稠密/hash) 通道融合权重
+    # ---- T1.3 H1（2026-09-06，ReFind 会话级 RRF）----
+    # 第二项 r2=候选所在 session 聚合名次的 RRF 贡献；默认关（行为零变化）。
+    session_rrf_enabled: bool = False
+    session_rrf_weight: float = 1.0
+    # ---- T1.1 J1（2026-09-06，CHM P1 确定性移植）----
+    # 确定性查询规划：entities 字段并入检索、temporal_cues 解析（F2 消费）；默认关。
+    query_plan_enabled: bool = False
+    # ---- T1.2 F2（2026-09-06，AMI/CHM 写入层时间锚定）----
+    # 相对时间→绝对时间解析器开关（写入期消费；默认关）
+    time_anchor_enabled: bool = False
     vector_min_cos: float = 0.05  # 语义通道相关性下限：低于此值不进入融合（precision-first）
     # hash 嵌入专用下限（2026-09-04 维度 G 修复）：hash 词袋余弦 = 词重叠比例，
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。
@@ -111,6 +121,9 @@ class Settings(BaseSettings):
     scene: str = "novel"  # 决定治理/增强/生命周期用哪个场景 schema
     # 写入期治理（AML 维度 D）：Add 时同主体新旧陈述冲突触发 supersede
     governance_enabled: bool = True
+    # T1.4 B2（2026-09-06）：soft-supersede 实验——旧值不硬隐藏(SUPERSEDED)，
+    # 而是 retrieval_weight 降为 30% 仍 ACTIVE 可返（AMI『改返回集』对照）；默认硬隐藏。
+    governance_soft_enabled: bool = False
 
     # ---- 规则专属 Wing（业务文档 8.2 / 8.3）----
     rule_llm_fallback: bool = True  # 规则引擎未命中时是否用 LLM 兜底判定

@@ -78,6 +78,34 @@ def test_update_semantics_still_supersede() -> None:
         assert status == "SUPERSEDED", (name, status)
 
 
+def test_soft_supersede_keeps_old_active_with_decay() -> None:
+    """B2（T1.4）：soft 模式下旧值不硬隐藏，retrieval_weight 降为 30% 仍 ACTIVE。"""
+    with tempfile.TemporaryDirectory(prefix="govsoft-") as td:
+        settings = Settings(data_dir=Path(td), embedding_provider="hash",
+                            scene="aml", journal_mode="off",
+                            governance_enabled=True,
+                            governance_soft_enabled=True, _env_file=None)
+        store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
+                                  embedding_dim=settings.embedding_dim)
+        try:
+            llm = LLMClient(settings)
+            for content in ("Alice prefers tea over coffee",
+                            "Alice currently prefers coffee"):
+                req = AddRequest(request_id="r", scope="s", session_id="s",
+                                 messages=[AmlMessage(role="user", content=content)])
+                run_add(store, llm, settings, req, journal=None)
+            row = store.connection.execute(
+                "SELECT status, retrieval_weight FROM memories "
+                "WHERE scope=? AND content=?",
+                ("s", "Alice prefers tea over coffee")).fetchone()
+            assert row is not None
+            assert row["status"] == "ACTIVE", row["status"]  # 软：仍在库可返
+            assert row["retrieval_weight"] <= 0.35, row["retrieval_weight"]
+            # 硬对照（默认）仍在既有用例 CASES_SUPERSEDE 覆盖
+        finally:
+            store.close()
+
+
 def test_signal_boundary_and_hypothetical_guards() -> None:
     """v2 内部判据抽查：词边界使 know 内的 now 不再成信号。"""
     from cortexa.domain.governance import GovernanceEngine

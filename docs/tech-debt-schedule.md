@@ -29,5 +29,13 @@
 | T3.3 RARE 术语统一(P2-2) | RARE 四步与 RARE-lite 并存易误读 | 文档/注释统一为 RARE-lite(检索后写回) vs RARE(完整四步,P4) | 术语表无歧义 | — | XS |
 | T3.4 mechanism-status v3 | 表停在 A1/A2 行，A/B/E/F/G/H/J 大量未收 | 全量刷新 | 表 v3 与档案一致 | — | S |
 
+## 进度（2026-09-06）
+- ✅ T2.2 InMind 路由门 / T2.3 token 等预算 / T2.4 recall_miss（见 T 系列执行记录）
+- ✅ T1.3 H1 会话级 RRF（modules/session_rrf.py + search 接线，默认关）
+- ✅ T1.1 J1 确定性查询规划（modules/query_plan.py + entity 通道，默认关）
+- ✅ T1.2 F2 时间锚定解析器（modules/time_anchor.py，写入接线待时间戳官方形态）
+- ✅ T1.4 B2 soft-supersede（governance_soft_enabled，默认硬隐藏；单测覆盖软/硬两路）
+- ⏳ 待做：T1 各旋钮 21 题/InMind 成对实验表；T2.1 judge 夹具；T3 批
+
 ## 执行顺序（依赖优先，每项过闸门）
 1. T2.2 InMind 路由门(数据可自取，先量化路由缺口) → 2. T2.3/T2.4 测量件 → 3. T1.3 H1 → 4. T1.1 J1 → 5. T1.2 F2 → 6. T1.4 B2 → 7. T2.1 judge 夹具 → 8. T3 批

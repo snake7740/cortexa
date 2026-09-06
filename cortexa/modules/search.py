@@ -207,11 +207,31 @@ def search_memory(
                 fused[ch_mem.id] = fused.get(ch_mem.id, 0.0) * CHAPTER_RRF_BOOST
                 hits[ch_mem.id] = (ch_mem, fused[ch_mem.id])
 
+    # T1.1 J1（默认关）：确定性查询规划——entities 字段走 entity 特征合并通道
+    if settings.query_plan_enabled and len(hits) < k:
+        from .query_plan import parse_query_plan
+        _plan = parse_query_plan(query)
+        if _plan["entities"]:
+            _merge(
+                store.entity_search(" ".join(_plan["entities"]), scope, limit=k * 3),
+                "plan",
+            )
+
+    # T1.3 H1（默认关）：会话级 RRF 第二项 r2（ReFind cluster boost）
+    bonus: dict[str, float] = {}
+    if settings.session_rrf_enabled and len(hits) > 1:
+        from .session_rrf import session_rrf_bonus
+        bonus = session_rrf_bonus(
+            hits, k=settings.rrf_k, weight=settings.session_rrf_weight
+        )
+
     scored: list[tuple[MemoryInstance, float]] = []
     for mem, score in hits.values():
         if mem.mem_type.value == "RULE":
             score *= settings.rule_boost  # 维度 F：规则稳定可见
         score *= _retention_factor(mem, settings)  # 保留度调制（首过中性，零退化）
+        if bonus:
+            score += bonus.get(mem.id, 0.0)
         scored.append((mem, score))
 
     scored.sort(key=lambda pair: pair[1], reverse=True)

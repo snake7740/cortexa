@@ -68,7 +68,10 @@ def run_add(
             for m in pending:
                 _stored_m = store.get(m.id, req.scope)
                 if _stored_m is not None:
-                    _gres = _gov.govern(_stored_m, req.scope)
+                    _gres = _gov.govern(
+                        _stored_m, req.scope,
+                        soft=settings.governance_soft_enabled,  # B2 实验
+                    )
                     # P2-5b（2026-09-06）：治理 supersede 逐条落 journal——
                     # 审计链可回答"谁取代了谁、依据什么信号"（对齐 retcon reason 口径）
                     if journal is not None:
