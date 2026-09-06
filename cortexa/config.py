@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # ~0.6s/embed 冲突（P1-3 挂账），Docker 参赛环境不开。
     semantic_channel: bool = False
     # 语义候选并入融合的上限（软通道：只补充不主导；RRF 天然降权）
-    semantic_candidates: int = 40
+    semantic_candidates: int = 80  # 2026-09-06 原型：80 才覆盖弱题真命中
 
     # 实体特征访问通道（维度 B 前哨）：代码保留，默认关闭。
     # 2026-08-31 A/B：内置题集与小说 1736 条库 Δ=0，延迟 15→54ms。
