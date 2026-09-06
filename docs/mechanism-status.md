@@ -29,7 +29,7 @@
 | retcon 修正链 / 实体关系图 / 编辑史 | facade.retcon/link/unlink/neighbors/entity_history；modules/graph.py | — | ✅ 已实现 | 双闭环 | test_retcon.py/test_graph.py |
 | 一致性审计 / 查体五科 / 探针 | facade.audit/checkup；modules/consistency.py/checkup.py | — | ✅ 已实现（只评不改） | 双闭环 | test_consistency/test_checkup；examples/novel_* |
 | 编号精确通道（第N章/第三十七章/Ch 40） | search.extract_chapter_nos + storage.chapter_search | chapter_channel=True | ✅ 已实现（小说实证 0/4→4/4） | W3 | test_review_fixes |
-| 实体特征通道 | storage.entity_search | entity_channel=False（默认关） | ✅ 代码保留/默认关（A/B Δ=0） | W3 回基线 | test_review_fixes::TestFeatureCueChannel |
+| 实体特征通道 | storage.entity_search | entity_channel=False（默认关） | ✅ 代码保留/默认关；2026-09-06 复测 9/11 均等、on=3.7× 时延 → 维持关闭（跨词汇缺口需 P4 NER/语义嵌入） | W3 回基线 | .loop/entity_ab_report.json + test_review_fixes |
 | 异步增强双阶段 Add（drain 收尾 + 场景一致） | enhancer.py（track/wait_enhance_threads）+ pipeline 登记；facade.close/server lifespan drain | async_enhance_enabled=True；scene 决定 schema | ✅ 已实现；P1-5（2026-09-06）线程可优雅收尾、Enhancer schema 从 settings.scene 解析 | W3/P1-5 | test_p2_5_p1_5.py |
 | 小说适配器（实体消歧/生命周期/文风/守卫） | modules/novel_adapter.py | novel_adapter_enabled=False（参赛关）；adapter_* 分开关 | ✅ 已实现 | 双闭环 | test_cast/test_lifecycle_engine/test_relations；小说 208 章实测 |
 | lifecycle guard 警告 → 独立字段 | novel_adapter.guard_lifecycle → SearchResult.warnings（exclude=True） | adapter_lifecycle_guard=True | ✅ 已实现；P2-5（2026-09-06）content 保持证据原文纯度，警告独立可读 | P2-5 | test_p2_5_p1_5.py |
@@ -37,7 +37,7 @@
 | 任务流水 journal（app/eval/off 脱敏） | journal.py；pipeline/search 写入 | journal_mode | ✅ 已实现 | W2 | test_journal |
 | scope 元数据/TTL 登记 | storage.record_scope（run_add 内自动） | source=eval if journal_mode=eval | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract::test_ttl |
 | 持久化/检索性能 | SQLite 三合一 + 向量缓存分页 | — | ✅ 现状；已知债务：P1-1 search 同步写、P1-2 治理 N+1、P1-3 embed 300ms>200ms（openai 路径）、P1-4 except×9 | P1 | — |
-| 链接双写（links_json vs links 表）检索零消费 | storage.add_links/memories.links_json vs graph.links | — | ⚠️ 债务（P2-1：收敛 + 邻居提升 A/B 未做） | P2-1 | — |
+| 链接两平面（非双写，P2-1 判定 2026-09-06） | memories.links_json=RARE 记忆-记忆桥；graph.links=实体-实体关系（link_type/基数/evidence） | — | ⚠️ 语义不同不可合并：记忆桥保留 links_json（检索消费待 P4 NER）；实体图维持实体权威。检索零消费仍为债务（P2-1b） | P2-1 | review-issues P2-1 处置 |
 | 质量闸 | pytest（tests/ 24 文件） | — | ✅ 239 passed（2026-09-06 实跑 29.4s）；**无 git/CI/lint**（P1-7 open） | P1-7 | 本表即审计证据 |
 
 ## 二、排期衔接（README 里程碑对照）

@@ -21,7 +21,11 @@
 
 **P1-1/P1-2/P1-5/P2-5 ✅（2026-09-06）**：touch 批量单查询单事务（hotpath 测试）；治理 find_conflicts 单次全行查询（语义 1:1）；增强线程 drain 收尾 + Enhancer schema 场景一致；守卫警告移入 SearchResult.warnings（exclude，content 纯度）。
 
-**仍 open（按原台账执行）**：P1-3（openai embed deadline，比赛向后置）；P2-1/2/6/7；P3-1。详细现状见 docs/mechanism-status.md（单一事实源）。
+**P2-1 ✅ 判定（2026-09-06）**：links_json（记忆-记忆 RARE 桥）与 graph.links（实体-实体关系）是**两个语义平面**而非双份——不强合（避免语义破坏）；记忆桥检索消费排期 P4 NER 后。
+**P2-7 ✅（2026-09-06）**：scratch/残留已归档 _archive（57MB，git 历史保留）。
+**P2-6 部分 ✅**：run_add 直测（test_enhance_stats 经 run_add 路径）、config 未接线阈值矩阵（删除后无字段可测）、热路径复杂度回归（test_hotpath_complexity）、增强/守卫（test_p2_5_p1_5）。
+
+**仍 open（按原台账执行）**：P1-3（openai embed deadline，比赛向后置）；P2-2（RARE 术语统一，小）；P2-6 剩余（config env 优先级矩阵、stress_smoke 平台前检）；P3-1（Dreaming/RARE 四步/遗忘引擎/NER——Dreaming 判据研究稿 2026-09-06 已定，见 docs/research/2026-09-06-dreaming-criteria.md）。详细现状见 docs/mechanism-status.md（单一事实源）。
 
 ---
 
