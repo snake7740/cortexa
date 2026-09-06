@@ -67,3 +67,19 @@ def test_minilm_provider_dim_guard_offline() -> None:
     cfg = Settings(embedding_provider="minilm", embedding_dim=512, _env_file=None)
     with pytest.raises(RuntimeError, match="384"):
         LLMClient(cfg).embed(["hello world"])
+
+
+def test_expand_and_token_accounting(tmp_path: Path) -> None:
+    """B1/B5：--expand 信号触发不崩溃；totals 带 tokens/query 与 expand 统计。"""
+    report = aml_replay.run_replay_convs(
+        aml_replay.SELFCHECK_CONVS, out_dir=tmp_path / "o3", top_k=2,
+        expand=True,
+    )
+    totals = report["totals"]
+    assert totals["avg_tokens_per_query_base"] >= 0
+    assert totals["avg_tokens_per_query_full"] >= totals["avg_tokens_per_query_base"]
+    assert totals["expand"]["enabled"] is True
+    assert totals["expand"]["triggered"] >= 0 and totals["expand"]["added"] >= 0
+    for q in report["questions"]:
+        assert "tokens_returned_base" in q and "tokens_returned_full" in q
+        assert "expand" in q

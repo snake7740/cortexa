@@ -59,6 +59,20 @@ CHANNELS = ("fts", "vec", "chapter", "entity")
 BUCKETS = ("hit", "fusion-miss", "channel-miss", "not-in-corpus")
 
 DISCLAIMER = "本地代理结果（非官方成绩）：上游数据 x 官方契约镜像近似，检索侧分桶；判官未接入。"
+# ---- B1/B5（2026-09-06，InvMem/ReFind 邻接扩写启发 + AMI token 失真发现）----
+# 条件触发信号（同会话邻接扩写只在指代/续接/回顾类查询开启，有界窗口）：
+EXPAND_SIGNALS = (
+    "again", "mentioned", "said", "the last", "that time", "that one",
+    "what was it", " the previous ", "we discussed", "you suggested",
+    "continue", "following up",
+)
+EXPAND_WINDOW = 3       # 每命中轮前后各取 N 轮（有界）
+EXPAND_MAX_FILL = 8     # 单题最多补入的邻接轮数（预算界）
+
+
+def _has_expand_signal(query: str) -> bool:
+    low = (" " + (query or "").lower() + " ")
+    return any(s in low for s in EXPAND_SIGNALS)
 
 SELFCHECK_CONVS = [
     {
@@ -119,7 +133,8 @@ def channel_recall(store: SQLiteMemoryStore, llm: LLMClient, settings: Settings,
 
 def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       provider: str = "hash", embedding_dim: int = 512,
-                      label: str = "", governance_enabled: bool = True) -> dict:
+                      label: str = "", governance_enabled: bool = True,
+                      expand: bool = False) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -127,6 +142,8 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
     questions_meta: list[dict] = []
     bucket_counter: Counter = Counter()
     hit1 = hit5 = total_q = 0
+    base_chars = full_chars = 0
+    expand_triggered = expand_added = 0
     label = label or provider
 
     with tempfile.TemporaryDirectory(prefix="cortexa-replay-") as td:
@@ -156,6 +173,15 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                         session_id=scope,
                     )
                     run_add(store, llm, settings, req, journal=journal)
+                    # B1：会话内插入序 id 表（邻接扩写定位用，rowid 保序）
+                    conv_order = [
+                        r["id"] for r in store.connection.execute(
+                            "SELECT id FROM memories WHERE scope=? ORDER BY rowid",
+                            (scope,),
+                        ).fetchall()
+                    ]
+                else:
+                    conv_order = []
 
                 for q in conv.get("questions") or []:
                     total_q += 1
@@ -182,10 +208,49 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                             "evidence": text[:80], "bucket": bucket,
                             "rank": rank, "channels": sorted(ch),
                         })
+                    # B1 条件邻接扩写（默认关）：只在信号查询触发，按 hit 轮前后有界
+                    # 补邻接轮；base 序不动、只在 top_k 余量内填充——检索分不变，
+                    # 变化的是"返回给答案模型的上下文量与完整性"（B5 token 统计）。
+                    triggered = expand and _has_expand_signal(query)
+                    context_ids: list[str] = []
+                    if triggered and conv_order:
+                        used = set(final_ids)
+                        pos = {mid: i for i, mid in enumerate(conv_order)}
+                        room = max(0, top_k - len(final_ids))
+                        # 邻接候选按命中序收集，外层也受 EXPAND_MAX_FILL 约束（有界）
+                        for bid in final_ids[:top_k]:
+                            if len(context_ids) >= min(EXPAND_MAX_FILL, room):
+                                break
+                            i = pos.get(bid)
+                            if i is None:
+                                continue
+                            for j in range(max(0, i - EXPAND_WINDOW),
+                                           min(len(conv_order), i + EXPAND_WINDOW + 1)):
+                                if len(context_ids) >= min(EXPAND_MAX_FILL, room):
+                                    break
+                                nid = conv_order[j]
+                                if nid in used:
+                                    continue
+                                used.add(nid)
+                                context_ids.append(nid)
+                    tokens_base = sum(len(r.content) for r in final)
+                    tokens_full = tokens_base
+                    for cid in context_ids:
+                        cm = store.get(cid, scope)
+                        if cm is not None:
+                            tokens_full += len(cm.content)
+                    base_chars += tokens_base
+                    full_chars += tokens_full
+                    if triggered:
+                        expand_triggered += 1
+                        expand_added += len(context_ids)
                     questions_meta.append({
                         "qid": q.get("qid", ""), "conv": scope, "query": query[:120],
                         "top_k": top_k, "search_ms": search_ms,
                         "evidence": ev_rows,
+                        "expand": {"triggered": triggered, "added": len(context_ids)},
+                        "tokens_returned_base": tokens_base,
+                        "tokens_returned_full": tokens_full,
                     })
         finally:
             store.close()
@@ -202,6 +267,11 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             "questions": total_q,
             "buckets": dict(bucket_counter),
             "evidence_hit@1": hit1, "evidence_hit@5": hit5,
+            # B5（AMI token 失真发现）：返回给答案模型的量按 tokens/query 口径记录
+            "avg_tokens_per_query_base": round(base_chars / max(total_q, 1) / 4, 1),
+            "avg_tokens_per_query_full": round(full_chars / max(total_q, 1) / 4, 1),
+            "expand": {"enabled": expand, "triggered": expand_triggered,
+                       "added": expand_added},
         },
         "questions": questions_meta,
     }
@@ -229,6 +299,9 @@ def _to_md(report: dict) -> str:
         "- 题数：" + str(t["questions"]) + "  top_k=" + str(report["meta"]["top_k"]),
         "- 证据分桶：" + json.dumps(t["buckets"], ensure_ascii=False),
         "- 证据级 hit@1=" + str(t["evidence_hit@1"]) + "  hit@5=" + str(t["evidence_hit@5"]),
+        "- tokens/query base=" + str(t.get("avg_tokens_per_query_base")) +
+        " full=" + str(t.get("avg_tokens_per_query_full")) +
+        " | expand=" + json.dumps(t.get("expand", {}), ensure_ascii=False),
         "",
         "| qid | conv | bucket | rank | channels | query |",
         "|---|---|---|---|---|---|",
@@ -272,6 +345,8 @@ def main() -> None:
     ap.add_argument("--no-governance", dest="governance_enabled",
                     action="store_false", default=True,
                     help="关闭治理 supersede（诊断：证据被治理标旧时用）")
+    ap.add_argument("--expand", action="store_true", default=False,
+                    help="B1 条件邻接扩写实验（信号查询 + 有界窗口；默认关）")
     ap.add_argument("--selfcheck", action="store_true", help="跑内置微型集（无数据可演示）")
     args = ap.parse_args()
 
@@ -293,7 +368,8 @@ def main() -> None:
     run_replay_convs(convs, out_dir=args.out, top_k=args.top_k,
                      provider=args.provider, embedding_dim=args.embedding_dim,
                      label=args.label,
-                     governance_enabled=args.governance_enabled)
+                     governance_enabled=args.governance_enabled,
+                     expand=args.expand)
 
 
 if __name__ == "__main__":
