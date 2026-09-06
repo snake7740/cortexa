@@ -1,0 +1,52 @@
+{
+  "source": "C:/Cortexa/_ref_apiguide.html — 官方 Add/Search API Guide（现行同步规范，zh/en 双语文档）",
+  "note": "2026-09-06 固化 golden。官方 Smoke 回执若与字段出入：只改本文件与 cortexa/models.py 契约段别名表，其余消费方不动。",
+  "contract_rules": [
+    "Add 请求字段：request_id/messages[{role,content,timestamp?}]/user_id/session_id；不发送 metadata/app_id/agent_id/async_mode",
+    "Add 200：{success:true, request_id, user_id, session_id}；三 ID 与请求逐字节一致；不返回 202/task ID/status URL",
+    "Search 请求：query/options?/user_id/top_k（正式外部评测固定 100）；不发送 filters/rerank/keyword_search",
+    "Search 200：{data:[{id, content, score?, created_at?}]}；data 必填数组、按相关性降序、无命中空数组；不要 items 包装",
+    "Health：无需鉴权 GET，任意 2xx 即正常；未配置时正式任务检查 Add 同源 /health",
+    "同步语义：Add 返回 HTTP 200 前记忆必须已持久化且立即可检索",
+    "隔离：user_id 是 Search 唯一检索范围字段，禁止跨 user_id 返回记忆",
+    "合规：评测数据仅用于当前任务；避免记录请求正文；任务完成后 30 天内删除",
+    "错误：400/422 契约错不重试；格式错即使 200 也立即失败（Add 缺 success=true/三ID、Search 缺 data 或缺 id/content）"
+  ],
+  "add_request": {
+    "request_id": "eval:run_abc123:locomo_refined:conv-0:chunk-0",
+    "messages": [
+      {
+        "role": "user",
+        "timestamp": 1704067200000,
+        "content": "memory text"
+      }
+    ],
+    "user_id": "eval:run_abc123:locomo:conv-0",
+    "session_id": "eval:run_abc123:sample:0"
+  },
+  "add_response_200": {
+    "success": true,
+    "request_id": "eval:run_abc123:locomo_refined:conv-0:chunk-0",
+    "user_id": "eval:run_abc123:locomo:conv-0",
+    "session_id": "eval:run_abc123:sample:0"
+  },
+  "search_request": {
+    "query": "Which answer best matches the memory?",
+    "options": [
+      "A. First answer",
+      "B. Second answer"
+    ],
+    "user_id": "eval:run_abc123:locomo:conv-0",
+    "top_k": 100
+  },
+  "search_response_200": {
+    "data": [
+      {
+        "id": "mem_1",
+        "content": "remembered fact text",
+        "score": 0.87,
+        "created_at": "2026-07-01T12:00:00Z"
+      }
+    ]
+  }
+}

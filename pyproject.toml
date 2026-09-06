@@ -1,0 +1,30 @@
+[project]
+name = "cortexa"
+version = "0.1.0"
+description = "Cortexa - bionic AI memory system for the Agent Memory Leaderboard challenge"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Cortexa Team" }]
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "numpy>=1.26,<3",
+    "httpx>=0.27,<1",
+    "openai>=1.40,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cortexa*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
