@@ -14,7 +14,7 @@
 | 30 天 TTL 数据删除（eval 启动清扫 + DELETE 兜底） | storage.record_scope/sweep_expired_eval_scopes/scope_meta 表；server lifespan | journal_mode=eval 时生效 | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract.py::test_ttl_sweep_only_eval_expired |
 | 端点并发安全（同步 def 入线程池） | server.py 全部端点 | — | ✅ 已实现（2026-09-06，原 async 包阻塞体修复） | P0-2 | 契约测试全绿；无 async def |
 | 参赛环境一键固化 + 启动自检 WARN | Dockerfile ENV；server lifespan logger.warning | CORTEXA_SCENE/JOURNAL_MODE/NOVEL_ADAPTER_ENABLED | ✅ 已实现（2026-09-06） | P0-1 | local_eval 以 scene=aml+journal=eval 复跑绿 |
-| 双通道召回（FTS5 bigram + hash 向量）+ RRF | modules/search.py；storage.fts_search/vector_search | chapter_channel=True | ✅ 已实现 | W2 | test_basic/test_contract；local_eval hit@1=0.909 |
+| 双通道召回 + 语义软通道（G1，默认关） | search.py；storage.fts_search/vector_search/vectors_sem sem_search | semantic_channel=False（默认）；provider=openai 且索引存在时启用，hash 通道并行 | ✅ 双通道已实现；G1 语义通道代码+测试落地（2026-09-06），实证 9/11 无回归但弱题需候选门控 → 维持关 | W2/G1 | test_semantic_channel.py（4）+ research 2026-09-06-semantic-embedding-pilot.md |
 | precision-first 截断 + 缺席闸 | search.py（空 scope O(1) 返空） | — | ✅ 已实现 | W2 | test_search_returns_empty_array |
 | RULE 专属 Wing（永不衰减 + rule_boost） | models.MemoryType.RULE + no_decay；search._retention_factor | rule_boost=1.25；rule_llm_fallback=True | ✅ 已实现 | W2/维度F | test_smoke::test_rule_memory_cannot_be_forgotten |
 | 维度地板审计（压缩前结构不丢） | modules/dimension_floor.py（enforce/assert_floor） | — | ✅ 已实现 | W2 | test_basic |

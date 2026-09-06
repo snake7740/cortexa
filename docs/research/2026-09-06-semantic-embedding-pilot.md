@@ -36,3 +36,16 @@
 - 若要在生产真实库试 hybrid：先做「语义索引分库」设计（vectors 表按 provider/dim 分区，避免与 hash 库混合矩阵）；
 - 成本与延迟护栏：embed 预算已 config（llm_timeout_embed_ms=300 与 200ms 红线冲突项 P1-3 仍挂账——语义入热路径必须先解）；
 - 结论进入 mechanism-status「语义嵌入：试点实证混合结果，默认 hash 维持」。
+## 五、hybrid v0 落地与扫描补记（同日实现后）
+
+- 已落地：storage.vectors_sem 独立表 + sem_search/add_semantic/sem_count/vector_dim；
+  settings.semantic_channel(默认关)+semantic_candidates；search 语义软通道（openai provider
+  且索引存在），并保留 hash 向量通道双轨（hybrid A/B 证明只留语义会让总结题回退，双通道无回归）；
+- 真实库副本全量语义索引 2620 条 <1 分钟建成（embed 实测远快于预估）；
+- 11 题机检：hash 9/11、双通道 hybrid 9/11（无回归，+21ms）；
+- boost∈{3,6,12,24} × candidates=80 扫描：弱题（灵根/甲字）**恒不命中**——原始语义词频排名
+  中目标记忆根本不在 top-80（早前『甲字✓』是显式把 oracle 塞进候选的乐观结果）；
+  结论：**无语义重排的候选门控（如专名/实体共现先行）之前，语义通道无法单独修复跨词汇弱题**；
+- 顺带发现真实库 vectors 表**混维（512+1024）**：历史 openai 误用残留 → R2 维护时清理 1024 行
+  （hash 512 为权威）或全量语义重建前先清；
+- 决策：semantic_channel 维持默认关；后续做「专名/实体门控候选 + 语义重排」原型后再评估开启。

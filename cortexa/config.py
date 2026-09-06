@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。
     # openai 语义嵌入仍用 vector_min_cos=0.05；按 embedding_provider 自动选择。
     vector_min_cos_hash: float = 0.28
+    # ---- 语义软通道（G1，2026-09-06）----
+    # 语义嵌入可用（DeepSeek /embeddings 实测），但朴素替换在总结题回退（研究稿
+    # 2026-09-06-semantic-embedding-pilot.md）→ 默认关，开启条件：embedding_provider=openai
+    # 且 scope 存在 vectors_sem 索引（semantic_index_build.py 构建）；检索时无索引自动回退。
+    # 注意：语义通道只在真实使用（小说写前 recall）启用——参赛 Search 红线 200ms 与
+    # ~0.6s/embed 冲突（P1-3 挂账），Docker 参赛环境不开。
+    semantic_channel: bool = False
+    # 语义候选并入融合的上限（软通道：只补充不主导；RRF 天然降权）
+    semantic_candidates: int = 40
+
     # 实体特征访问通道（维度 B 前哨）：代码保留，默认关闭。
     # 2026-08-31 A/B：内置题集与小说 1736 条库 Δ=0，延迟 15→54ms。
     # 2026-09-06 复测（2620 条库 + 11 题机检，见 .loop/entity_ab_report.json）：

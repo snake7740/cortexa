@@ -249,6 +249,14 @@ class SQLiteMemoryStore(MemoryStore):
             " last_write_ms INTEGER,"
             " source TEXT NOT NULL DEFAULT 'app')"
         )
+        # G1（2026-09-06）：语义向量独立表（provider/dim 与 hash 512 分离，避免混合矩阵）
+        self._conn.executescript(
+            "CREATE TABLE IF NOT EXISTS vectors_sem ("
+            " mem_id TEXT PRIMARY KEY,"
+            " scope TEXT NOT NULL,"
+            " dim INTEGER NOT NULL,"
+            " embedding BLOB NOT NULL)"
+        )
         self._migrate_memories_columns()  # 既有库补列（op_type/supersedes_id）
         self._conn.commit()
         # 向量内存缓存（懒加载，写入时同步追加）；_vec_pages 是分页待合并区，
@@ -575,6 +583,82 @@ class SQLiteMemoryStore(MemoryStore):
             return out
 
     # -- 治理 ---------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # G1：语义向量索引（vectors_sem，provider/dim 与 hash 分离，2026-09-06）
+    # ------------------------------------------------------------------
+
+    def add_semantic(self, mem_id: str, scope: str, embedding: list[float]) -> None:
+        """写入/覆盖一条语义向量（幂等 upsert）。"""
+        arr = np.asarray(embedding, dtype=np.float32)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO vectors_sem(mem_id, scope, dim, embedding) VALUES(?,?,?,?) "
+                "ON CONFLICT(mem_id) DO UPDATE SET scope=excluded.scope, dim=excluded.dim, "
+                "embedding=excluded.embedding",
+                (mem_id, scope, int(arr.size), arr.tobytes()),
+            )
+            self._conn.commit()
+
+    def vector_dim(self, scope: str) -> int | None:
+        """hash 向量通道可用性：vectors 表有行即返回本 store 维度（防御 legacy 混维库：
+        真实库曾混入 1024 行——缓存按 self._dim 过滤，查询须用同维 hash 嵌入）。"""
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM vectors").fetchone()
+            return self._dim if row and int(row[0]) > 0 else None
+
+    def sem_count(self, scope: str) -> int:
+        """scope 的语义向量条数（>0 才走语义通道，否则静默回退）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM vectors_sem WHERE scope = ?", (scope,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def sem_search(
+        self, embedding: list[float], scope: str, limit: int, min_cos: float = 0.05
+    ) -> list[tuple[MemoryInstance, float]]:
+        """语义通道（独立表）：纯余弦降序；RULE/no_decay 豁免下限（与 vector_search 同则）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT mem_id, dim, embedding FROM vectors_sem WHERE scope = ?", (scope,)
+            ).fetchall()
+        if not rows:
+            return []
+        q = np.asarray(embedding, dtype=np.float32)
+        ids: list[str] = []
+        mat: list[np.ndarray] = []
+        for r in rows:
+            dim = int(r["dim"])
+            if dim != q.size:
+                continue  # 维度不一致（provider 切换残留）跳过该行
+            ids.append(r["mem_id"])
+            mat.append(np.frombuffer(r["embedding"], dtype=np.float32).copy())
+        if not ids:
+            return []
+        M = np.stack(mat)
+        qn = np.linalg.norm(q)
+        denom = np.clip(np.linalg.norm(M, axis=1) * qn, 1e-9, None)
+        sims = (M @ q) / denom
+        order = np.argsort(-sims)[:limit]
+        out: list[tuple[MemoryInstance, float]] = []
+        for i in order:
+            row = self._conn.execute(
+                "SELECT mem_type, no_decay FROM memories WHERE id = ? AND status = 'ACTIVE'",
+                (ids[i],),
+            ).fetchone()
+            if row is None:
+                continue
+            is_rule = row["mem_type"] == MemoryType.RULE.value or bool(row["no_decay"])
+            if (not is_rule) and float(sims[i]) < min_cos:
+                continue
+            full = self._conn.execute(
+                "SELECT * FROM memories WHERE id = ? AND status = 'ACTIVE'", (ids[i],)
+            ).fetchone()
+            if full is None:
+                continue
+            out.append((self._row_to_mem(full), float(sims[i])))
+        return out
 
     def supersede(self, old_id: str, new_id: str, scope: str) -> None:
         """矛盾覆盖（业务文档 8.5）：旧记忆标记过期但保留可追溯（维度 C）。

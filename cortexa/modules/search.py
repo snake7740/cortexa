@@ -26,6 +26,8 @@ from ..storage import MemoryStore
 # 若只按 RRF(k=60) 融合，章节命中（1/(60+r)≈0.016）会被弱 FTS 词重叠淹没——
 # 实测 top3 漂到无关章节。章号是强意图信号，给该通道成员 ×CHAPTER_RRF_BOOST。
 CHAPTER_RRF_BOOST = 6.0
+# 语义软通道加成（真实使用写前 recall 用；参赛红线路径不开）
+SEM_CHANNEL_BOOST = 3.0
 
 
 def _retention_factor(mem: MemoryInstance, settings: Settings) -> float:
@@ -134,15 +136,44 @@ def search_memory(
             hits[mem.id] = (mem, fused[mem.id])
 
     _merge(store.fts_search(query, scope, limit=k * 3))
-    _merge(
-        store.vector_search(
-            llm.embed([query])[0], scope, limit=k * 3,
-            # provider 自适应下限：hash 词袋余弦阈值更严（0.25），语义嵌入用 0.05
-            min_cos=(settings.vector_min_cos_hash
-                     if settings.embedding_provider == "hash"
-                     else settings.vector_min_cos),
-        )
+    _provider = settings.embedding_provider
+    # G1 语义软通道（2026-09-06）：openai provider + semantic_channel + 存在索引才走；
+    # 语义成员融合分 ×SEM_CHANNEL_BOOST（软补充不主导）；无索引/维度不符自动回退。
+    _use_sem = (
+        _provider == "openai" and settings.semantic_channel
+        and store.sem_count(scope) > 0
     )
+    if _use_sem:
+        # 语义软通道（独立表 1024）+ 并行补跑 hash 向量通道（512 存量矩阵）——
+        # hybrid A/B 实证：只留语义会让「主线」类总结题回退（hash 通道丢了）；
+        # 双通道并存由 RRF 天然降权，各自补位。
+        sem_mems = store.sem_search(
+            llm.embed([query])[0], scope, limit=settings.semantic_candidates,
+            min_cos=settings.vector_min_cos,
+        )
+        _merge(sem_mems)
+        for sem_mem, _raw in sem_mems:
+            fused[sem_mem.id] = fused.get(sem_mem.id, 0.0) * SEM_CHANNEL_BOOST
+            hits[sem_mem.id] = (sem_mem, fused[sem_mem.id])
+        hdim = store.vector_dim(scope)
+        if hdim is not None:
+            from ..llm import HashEmbedder
+            _merge(
+                store.vector_search(
+                    HashEmbedder(dim=hdim).embed(query), scope, limit=k * 3,
+                    min_cos=settings.vector_min_cos_hash,
+                )
+            )
+    elif _provider == "hash":
+        # hash 向量与语义索引分库共存；hash provider 永不触碰 sem 表
+        _merge(
+            store.vector_search(
+                llm.embed([query])[0], scope, limit=k * 3,
+                min_cos=settings.vector_min_cos_hash,
+            )
+        )
+    # provider=openai 且（semantic_channel 关 或 无索引）：FTS/chapter/entity 兜底，
+    # 不发 hash 向量（防 512/1024 维数错乱）
     if settings.entity_channel:
         _merge(store.entity_search(query, scope, limit=k * 3))
     if settings.chapter_channel:
