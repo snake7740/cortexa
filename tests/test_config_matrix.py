@@ -25,3 +25,5 @@ def test_t1_defaults_off() -> None:
     assert cfg.query_plan_enabled is False
     assert cfg.governance_soft_enabled is False
     assert cfg.time_anchor_enabled is False
+    assert cfg.options_dual_channel_enabled is False  # Q2a-D（v3 §5.3）默认关
+    assert cfg.options_channel_weight == 0.5

@@ -118,10 +118,11 @@ def search_memory(
 
     # G1（2026-09-06，InvMem 查询构造）：选择题把 question+options 拼接为统一
     # 检索查询——选项里的实体/候选事实也参与召回；原文案/限流由官方 Answer 侧管。
-    # 只用于各通道检索与向量化，journal 仍记录原始 query（可审计）。
-    eff_query = query
-    if options:
-        eff_query = (query + " " + " ".join(options)).strip()
+    # Q2a-D（2026-09-06，外部复核 v3 §5.3，默认关）：双通道档改为题干独立作主查询
+    # + 选项低权副通道（见后），对照 G1 拼接档做 A/B。journal 永远记录原始 query。
+    dual_options = bool(options) and settings.options_dual_channel_enabled
+    eff_query = query if dual_options else (
+        (query + " " + " ".join(options)).strip() if options else query)
 
     def _empty_journal() -> list[SearchResult]:
         if journal is not None:
@@ -216,6 +217,16 @@ def search_memory(
                 store.entity_search(" ".join(_plan["entities"]), scope, limit=k * 3),
                 "plan",
             )
+
+    # Q2a-D（默认关）：选项低权副通道——题干主查询之上，选项文本单独召回候选并
+    # 以 options_channel_weight 降权进融合（防选项实体淹没题干；对照 G1 拼接）。
+    if dual_options:
+        _opt_q = " ".join(options)
+        _merge(store.fts_search(_opt_q, scope, limit=k * 3), "opts",
+               settings.rrf_lexical_weight * settings.options_channel_weight)
+        if settings.entity_channel:
+            _merge(store.entity_search(_opt_q, scope, limit=k * 3), "opts",
+                   settings.options_channel_weight)
 
     # T1.3 H1（默认关）：会话级 RRF 第二项 r2（ReFind cluster boost）
     bonus: dict[str, float] = {}

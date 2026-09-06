@@ -51,6 +51,7 @@ from cortexa.config import Settings  # noqa: E402
 from cortexa.journal import TaskJournal  # noqa: E402
 from cortexa.llm import LLMClient  # noqa: E402
 from cortexa.models import AddRequest, AmlMessage, content_hash  # noqa: E402
+from cortexa.modules import evidence_packaging  # noqa: E402
 from cortexa.modules.pipeline import run_add  # noqa: E402
 from cortexa.modules.search import extract_chapter_nos, search_memory  # noqa: E402
 from cortexa.storage import SQLiteMemoryStore  # noqa: E402
@@ -139,7 +140,8 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       rewrites: dict | None = None,
                       token_cap: int | None = None,
                       plan: bool = False,
-                      soft_governance: bool = False) -> dict:
+                      soft_governance: bool = False,
+                      packaging: str = "raw") -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -148,6 +150,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
     bucket_counter: Counter = Counter()
     hit1 = hit5 = total_q = 0
     base_chars = full_chars = 0
+    pkg_total_chars = 0
     expand_triggered = expand_added = 0
     label = label or provider
 
@@ -188,8 +191,16 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                             (scope,),
                         ).fetchall()
                     ]
+                    _conv_contents = {
+                        r["id"]: r["content"] for r in store.connection.execute(
+                            "SELECT id, content FROM memories WHERE scope=?",
+                            (scope,),
+                        ).fetchall()
+                    }
+                    conv_content_of = lambda _i: _conv_contents.get(_i)  # noqa: E731
                 else:
                     conv_order = []
+                    conv_content_of = lambda _i: None  # noqa: E731
 
                 for q in conv.get("questions") or []:
                     total_q += 1
@@ -250,6 +261,14 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                                     continue
                                 used.add(nid)
                                 context_ids.append(nid)
+                    # Q8（2026-09-06，外部复核 v3 §12）：证据包装——固定 membership，
+                    # 只变每个证据槽的文本粒度；不改召回/排序（不变量），仅统计包装后
+                    # 送答模型的文本量（判答层接入前用 token/覆盖代理裁决）。
+                    pkg_texts, pkg_added = evidence_packaging.pack_question(
+                        final, conv_order, conv_content_of, packaging,
+                    )
+                    tokens_packaged = sum(len(t) for t in pkg_texts)
+                    pkg_total_chars += pkg_added
                     tokens_base = sum(len(r.content) for r in final)
                     tokens_full = tokens_base
                     for cid in context_ids:
@@ -280,6 +299,9 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                         "expand": {"triggered": triggered, "added": len(context_ids)},
                         "tokens_returned_base": tokens_base,
                         "tokens_returned_full": tokens_full,
+                        "tokens_returned_packaged": tokens_packaged,
+                        "packaging": {"mode": packaging,
+                                      "appended_chars": pkg_added},
                         "rewrites": {"probed": len(rws), "best_rank": rewrite_best},
                         "token_capped": token_capped,
                     })
@@ -293,6 +315,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             "source": "上游数据集近似（文件来源见调用参数）", "top_k": top_k,
             "provider": provider, "embedding_dim": embedding_dim, "label": label,
             "conversations": len(convs), "questions": total_q,
+            "packaging": packaging,
         },
         "totals": {
             "questions": total_q,
@@ -301,6 +324,9 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             # B5（AMI token 失真发现）：返回给答案模型的量按 tokens/query 口径记录
             "avg_tokens_per_query_base": round(base_chars / max(total_q, 1) / 4, 1),
             "avg_tokens_per_query_full": round(full_chars / max(total_q, 1) / 4, 1),
+            "avg_tokens_per_query_packaged": round(
+                (base_chars + pkg_total_chars) / max(total_q, 1) / 4, 1),
+            "packaging_chars": pkg_total_chars,
             "expand": {"enabled": expand, "triggered": expand_triggered,
                        "added": expand_added},
         },
@@ -399,6 +425,10 @@ def main() -> None:
                     help="T1.1 J1：开启确定性查询规划(entities 通道)")
     ap.add_argument("--soft-governance", action="store_true", default=False,
                     help="T1.4 B2：治理 soft 模式(旧值降权仍可返)")
+    ap.add_argument("--packaging", default="raw",
+                    choices=["raw", "pm1", "pm2", "raw-atomic"],
+                    help="Q8 证据包装档：raw=原文(默认) | pm1=+前1邻接 | "
+                    "pm2=+前2邻接 | raw-atomic=RAW+前1支撑(原子支持近似)")
     ap.add_argument("--token-cap", type=int, default=None,
                     help="T2.3：按 tokens/query 预算截断返回集(低分段优先删,至少留1)；"
                     "None=不截断")
@@ -433,7 +463,8 @@ def main() -> None:
                      rewrites=(json.loads(args.rewrites.read_text(encoding="utf-8"))
                                if args.rewrites else None),
                      token_cap=args.token_cap, plan=args.plan,
-                     soft_governance=args.soft_governance)
+                     soft_governance=args.soft_governance,
+                     packaging=args.packaging)
 
 
 if __name__ == "__main__":

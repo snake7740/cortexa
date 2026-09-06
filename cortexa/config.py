@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # MEMORY_LEXICAL_WEIGHT=0.5，dense 1.0）。改检索行为必须 retrieval_gate 复跑。
     rrf_lexical_weight: float = 1.0   # fts(词法≈BM25) 通道融合权重
     rrf_vector_weight: float = 1.0    # 向量(稠密/hash) 通道融合权重
+    # ---- Q2a-D options 双通道（2026-09-06，外部复核 v3 §5.3）----
+    # G1 默认=question+options 拼接单查询；双通道档=题干独立主查询 + 选项低权副通道
+    # （对照实验面：选项实体不再淹没题干信号）。默认关，行为零变化。
+    options_dual_channel_enabled: bool = False
+    options_channel_weight: float = 0.5   # 选项副通道 RRF 权重（题干为主）
     # ---- T1.3 H1（2026-09-06，ReFind 会话级 RRF）----
     # 第二项 r2=候选所在 session 聚合名次的 RRF 贡献；默认关（行为零变化）。
     session_rrf_enabled: bool = False

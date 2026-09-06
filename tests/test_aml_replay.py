@@ -69,6 +69,24 @@ def test_minilm_provider_dim_guard_offline() -> None:
         LLMClient(cfg).embed(["hello world"])
 
 
+def test_packaging_reporting(tmp_path: Path) -> None:
+    """Q8：--packaging 不改 membership（raw 与 pm1 buckets 一致），只增送答文本量。"""
+    raw = aml_replay.run_replay_convs(
+        aml_replay.SELFCHECK_CONVS, out_dir=tmp_path / "pr", top_k=2, packaging="raw"
+    )
+    pm1 = aml_replay.run_replay_convs(
+        aml_replay.SELFCHECK_CONVS, out_dir=tmp_path / "pp", top_k=2, packaging="pm1"
+    )
+    assert raw["totals"]["buckets"] == pm1["totals"]["buckets"]  # membership 不变
+    assert raw["meta"]["packaging"] == "raw"
+    assert pm1["meta"]["packaging"] == "pm1"
+    assert (pm1["totals"]["avg_tokens_per_query_packaged"]
+            >= pm1["totals"]["avg_tokens_per_query_base"])
+    assert pm1["totals"]["packaging_chars"] >= 0
+    for q in pm1["questions"]:
+        assert "packaging" in q and "tokens_returned_packaged" in q
+
+
 def test_expand_and_token_accounting(tmp_path: Path) -> None:
     """B1/B5：--expand 信号触发不崩溃；totals 带 tokens/query 与 expand 统计。"""
     report = aml_replay.run_replay_convs(

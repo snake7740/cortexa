@@ -28,6 +28,31 @@ def _setup(tmp_path: Path) -> tuple[SQLiteMemoryStore, LLMClient, Settings, str]
     return store, llm, settings, "s"
 
 
+def test_options_dual_channel_recalls_option_entity(tmp_path: Path) -> None:
+    """Q2a-D（v3 §5.3，默认关）：题干独立主通道 + 选项低权副通道也能召回选项实体。"""
+    store, llm, settings, scope = _setup(tmp_path)
+    dual = Settings(data_dir=settings.data_dir, embedding_provider="hash",
+                    scene="aml", journal_mode="off", _env_file=None,
+                    options_dual_channel_enabled=True)
+    try:
+        opts = ["A. Pain Quotidien", "B. La Boulangerie Bleue", "C. Le Pain"]
+        with_opts = search_memory(
+            store, llm, dual, query="What is the name of the shop she likes?",
+            scope=scope, top_k=3, options=opts,
+        )
+        assert any("Boulangerie" in r.content for r in with_opts), [
+            r.content[:40] for r in with_opts
+        ]
+        # 无选项时题干通道零命中（双通道不改变题干侧 precision-first）
+        no_opts = search_memory(
+            store, llm, dual, query="What is the name of the shop she likes?",
+            scope=scope, top_k=3,
+        )
+        assert not any("Boulangerie" in r.content for r in no_opts)
+    finally:
+        store.close()
+
+
 def test_options_concat_recalls_option_entity(tmp_path: Path) -> None:
     store, llm, settings, scope = _setup(tmp_path)
     try:
