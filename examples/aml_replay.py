@@ -22,6 +22,16 @@ rerank 桶不存在（确定性排序，无重排阶段）——保留字段以�
 用法：
     python examples/aml_replay.py --data convs.jsonl --out cortexa-out
     python examples/aml_replay.py --selfcheck   # 内置微型集自检（无数据也可跑）
+
+A3 成对基线（hash vs 本地 MiniLM，agentmemory 式 BM25+FTS 对照）：
+    # 先装依赖 + 预下载模型（venv）：
+    #   cortexa-mvp/.venv/Scripts/python.exe -m pip install sentence-transformers
+    #   cortexa-mvp/.venv/Scripts/python.exe -c "from sentence_transformers import
+    #     SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+    #   （HF 下载失败时设 HF_ENDPOINT=https://hf-mirror.com 再跑）
+    python examples/aml_replay.py --data convs.jsonl --provider hash   --embedding-dim 512 --label hash
+    python examples/aml_replay.py --data convs.jsonl --provider minilm --embedding-dim 384 --label minilm
+    同一份数据两个 label 的报告并排比 buckets/hit@K 即 A3 成对结果（本地代理口径）。
 """
 
 from __future__ import annotations
@@ -107,16 +117,23 @@ def channel_recall(store: SQLiteMemoryStore, llm: LLMClient, settings: Settings,
     return out
 
 
-def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5) -> dict:
-    """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。"""
+def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
+                      provider: str = "hash", embedding_dim: int = 512,
+                      label: str = "") -> dict:
+    """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
+
+    provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
+    """
     questions_meta: list[dict] = []
     bucket_counter: Counter = Counter()
     hit1 = hit5 = total_q = 0
+    label = label or provider
 
     with tempfile.TemporaryDirectory(prefix="cortexa-replay-") as td:
         settings = Settings(
-            data_dir=Path(td) / "d", embedding_provider="hash",
-            scene="aml", journal_mode="off", _env_file=None,
+            data_dir=Path(td) / "d", embedding_provider=provider,
+            embedding_dim=embedding_dim, scene="aml", journal_mode="off",
+            _env_file=None,
         )
         settings.data_dir.mkdir(parents=True, exist_ok=True)  # 直连 store 需先建目录（server 路径由 create_app 代建）
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
@@ -178,6 +195,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5) -> dict:
         "meta": {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "source": "上游数据集近似（文件来源见调用参数）", "top_k": top_k,
+            "provider": provider, "embedding_dim": embedding_dim, "label": label,
             "conversations": len(convs), "questions": total_q,
         },
         "totals": {
@@ -242,6 +260,12 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "cortexa-out",
                     help="报告输出目录（默认 cortexa-out）")
     ap.add_argument("--top-k", type=int, default=5)
+    ap.add_argument("--provider", default="hash",
+                    help="向量提供者：hash（默认）| minilm（A3 对照，需 384 维+模型）")
+    ap.add_argument("--embedding-dim", type=int, default=512,
+                    help="向量维度：hash=512（默认）；minilm=384")
+    ap.add_argument("--label", default="",
+                    help="报告 label（成对实验区分档位；默认取 provider 名）")
     ap.add_argument("--selfcheck", action="store_true", help="跑内置微型集（无数据可演示）")
     args = ap.parse_args()
 
@@ -251,7 +275,9 @@ def main() -> None:
         convs = load_convs(args.data)
     else:
         ap.error("需要 --data 或 --selfcheck")
-    run_replay_convs(convs, out_dir=args.out, top_k=args.top_k)
+    run_replay_convs(convs, out_dir=args.out, top_k=args.top_k,
+                     provider=args.provider, embedding_dim=args.embedding_dim,
+                     label=args.label)
 
 
 if __name__ == "__main__":

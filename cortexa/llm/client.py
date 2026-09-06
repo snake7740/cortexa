@@ -107,6 +107,7 @@ class LLMClient:
             stats=self.resilience,
         )
         self._openai_client = None
+        self._minilm = None  # A3 实验：all-MiniLM-L6-v2 懒加载（sentence-transformers，384 维离线）
         # chat(分类/抽取) 与 embedding 解耦：只要配了 key 就建 OpenAI 兼容客户端。
         # （embedding 用哪个 provider 由 embed() 内部决定；DeepSeek 只有 chat 无 embedding）
         if settings.openai_api_key:
@@ -202,6 +203,8 @@ class LLMClient:
         Matryoshka 截断），否则重启后 _ensure_vec_cache 按维度过滤会把全部向量
         静默丢弃——语义通道瘫痪且无报错。
         """
+        if self.settings.embedding_provider == "minilm":
+            return self._embed_minilm(texts)
         if self.settings.embedding_provider == "openai" and self._openai_client is not None:
             def _call():
                 client = self._openai_client
@@ -222,3 +225,38 @@ class LLMClient:
                 return vectors
             # 失败/熔断/超时 -> 降级 hash（保证写入管线不因外部服务中断）
         return [self._embedder.embed(t) for t in texts]
+
+    # -- A3 实验：本地 MiniLM 语义嵌入（all-MiniLM-L6-v2，384 维，离线）-------
+    # 对齐 agentmemory 对照基线（BM25+FTS 共用本库 fts 通道，向量换 MiniLM）。
+    # 失败显式化：维度不符/依赖缺失/模型加载失败一律 raise——本地语义 vs hash
+    # 的成对实验若静默回退 hash 会得出假结论，故不走 embed() 的通用降级。
+    def _embed_minilm(self, texts: list[str]) -> list[list[float]]:
+        if self.settings.embedding_dim != 384:
+            raise RuntimeError(
+                "embedding_provider=minilm 需 CORTEXA_EMBEDDING_DIM=384"
+                "（all-MiniLM-L6-v2 输出 384 维，存储矩阵维度红线）"
+            )
+        if self._minilm is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as _exc:
+                raise RuntimeError(
+                    "embedding_provider=minilm 缺 sentence-transformers："
+                    "先执行 cortexa-mvp/.venv/Scripts/python.exe -m pip install "
+                    "sentence-transformers，再预下载模型（见 docs/research A3 说明）"
+                ) from _exc
+            try:
+                self._minilm = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2"
+                )
+            except Exception as _exc:  # noqa: BLE001 —— 网络/缓存失败须显式（可设 HF_ENDPOINT=https://hf-mirror.com）
+                raise RuntimeError(
+                    f"MiniLM 模型加载失败（需先联网预下载或设 HF_ENDPOINT 镜像）：{_exc}"
+                ) from _exc
+        try:
+            arr = self._minilm.encode(
+                list(texts), normalize_embeddings=True, convert_to_numpy=True
+            )
+        except Exception as _exc:  # noqa: BLE001
+            raise RuntimeError(f"MiniLM 编码失败：{_exc}") from _exc
+        return [v.tolist() for v in arr]

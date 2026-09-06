@@ -1,14 +1,19 @@
-"""A2 本地回放器测试：纯分桶逻辑 + 端到端自检。"""
+"""A2 本地回放器测试：纯分桶逻辑 + 端到端自检 + A3 provider 参数面。"""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "examples"))
 
 import aml_replay  # noqa: E402
+
+from cortexa.config import Settings  # noqa: E402
+from cortexa.llm import LLMClient  # noqa: E402
 
 
 def test_classify_evidence_pure() -> None:
@@ -43,3 +48,22 @@ def test_selfcheck_end_to_end(tmp_path: Path) -> None:
     for q in report["questions"]:
         for e in q["evidence"]:
             assert e["bucket"] in allowed, e
+
+
+def test_report_meta_carries_provider_label(tmp_path: Path) -> None:
+    """A3：成对实验档位（provider/embedding_dim/label）必须落进报告元数据。"""
+    report = aml_replay.run_replay_convs(
+        aml_replay.SELFCHECK_CONVS, out_dir=tmp_path / "o2", top_k=5,
+        provider="hash", embedding_dim=512, label="ab-hash",
+    )
+    meta = report["meta"]
+    assert meta["provider"] == "hash"
+    assert meta["embedding_dim"] == 512
+    assert meta["label"] == "ab-hash"
+
+
+def test_minilm_provider_dim_guard_offline() -> None:
+    """A3：minilm 在维度 != 384 时必须显式失败（不静默降级 hash）。"""
+    cfg = Settings(embedding_provider="minilm", embedding_dim=512, _env_file=None)
+    with pytest.raises(RuntimeError, match="384"):
+        LLMClient(cfg).embed(["hello world"])
