@@ -38,7 +38,9 @@
 | scope 元数据/TTL 登记 | storage.record_scope（run_add 内自动） | source=eval if journal_mode=eval | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract::test_ttl |
 | 持久化/检索性能 | SQLite 三合一 + 向量缓存分页 | — | ✅ 现状；已清偿：P1-1 touch 批量单事务、P1-2 治理单次全行查询、P1-4 EnhanceStats 观察面（2026-09-06）；剩余债务：P1-3 embed 300ms>200ms 仅 openai/语义路径（参赛 hash 路径不受影响） | P1 | tests/test_hotpath_complexity.py |
 | 链接两平面（非双写，P2-1 判定 2026-09-06） | memories.links_json=RARE 记忆-记忆桥；graph.links=实体-实体关系（link_type/基数/evidence） | — | ⚠️ 语义不同不可合并：记忆桥保留 links_json（检索消费待 P4 NER）；实体图维持实体权威。检索零消费仍为债务（P2-1b） | P2-1 | review-issues P2-1 处置 |
-| 质量闸 | scripts/check.py（compileall + ruff + pytest）；git 基线 | — | ✅ 259 passed（2026-09-06 实跑）；git 基线 + ruff（E4/E7/E9/F/I，项目闸门范围全绿）——原 P1-7 已关闭 | P1-7 关闭 | scripts/check.py；ledger 行 5-22 |
+| A1 检索质量回归门 | scripts/retrieval_gate.py（local_eval 默认档 x 基线 json） | check.py 自动调用 | ✅ 已实现（2026-09-06）：hit@1/hit@5/mrr + 治理/维度比率下降 >0.02 即红 | A1 | tests/golden/retrieval_baseline.json（hit@1 .909/mrr .939）；test_retrieval_gate.py |
+| A2 本地回放器 v0 | examples/aml_replay.py（上游数据近似 + 逐题分桶） | --data / --selfcheck | ✅ 已实现（2026-09-06，检索侧）：fusion/channel/not-in-corpus 分桶 + 报告落 cortexa-out；判官接入 v1（需官方 judge 口径） | A2 | tests/test_aml_replay.py；自检端到端通过 |
+| 质量闸 | scripts/check.py（compileall + ruff + retrieval-gate + pytest）；git 基线 | — | ✅ 264 passed（2026-09-06 实跑 29.9s）；ruff（E4/E7/E9/F/I 项目闸门范围全绿）；A1 检索质量回归门已接入——原 P1-7 已关闭 | P1-7 关闭 | scripts/check.py；ledger 行 5-26 |
 
 ## 二、排期衔接（README 里程碑对照）
 

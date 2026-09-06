@@ -1,0 +1,28 @@
+{
+  "note": "local_eval 内置题集默认档(entity_channel=False, scene=aml)检索质量基线；任何检索侧改动(通道/融合/排序)后 hit@1/hit@5/mrr 与治理/维度比率下降 >0.02 即回归(A1, 2026-09-06)",
+  "tolerance": 0.02,
+  "metrics": {
+    "hit@1": 0.909,
+    "hit@5": 1.0,
+    "mrr": 0.939,
+    "gov_supersede_ratio": 1.0,
+    "gov_no_overkill_ratio": 1.0,
+    "dim_B_ratio": 1.0,
+    "dim_C_ratio": 1.0,
+    "dim_F_ratio": 1.0
+  },
+  "summary_human": {
+    "label": "entity_channel=off",
+    "hit@1": 0.909,
+    "hit@5": 1.0,
+    "mrr": 0.939,
+    "unanswerable_avg_results": 2.33,
+    "add_p95_ms": 10.3,
+    "search_p95_ms": 6.5,
+    "gov_supersede": "3/3",
+    "gov_no_overkill": "1/1",
+    "dim_B": "2/2",
+    "dim_C": "2/2",
+    "dim_F": "2/2"
+  }
+}

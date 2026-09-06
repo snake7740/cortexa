@@ -32,12 +32,16 @@ def main() -> int:
             codes.append(("ruff", _run([ruff, "check", "cortexa", "examples", "tests", "scripts"])))
         else:
             print(">> ruff 未安装，跳过（--quick 同义）")
+    if not quick:
+        # A1 检索质量回归门（2026-09-06，brainctl 式 >2% 掉分即红）：本地内置题集
+        # 默认档 hit@1/hit@5/mrr + 治理/维度比率不得回退。--quick 跳过（同 ruff）。
+        codes.append(("retrieval-gate", _run([PY, "scripts/retrieval_gate.py"])))
     codes.append(("pytest", _run([PY, "-m", "pytest", "-q", "-p", "no:cacheprovider"])))
     failed = [name for name, c in codes if c != 0]
     if failed:
         print(f"CHECK FAILED: {', '.join(failed)}")
         return 1
-    print("CHECK OK: compileall + " + ("ruff + " if not quick else "") + "pytest 全绿")
+    print("CHECK OK: compileall + " + ("ruff + retrieval-gate + " if not quick else "") + "pytest 全绿")
     return 0
 
 
