@@ -636,20 +636,26 @@ class SQLiteMemoryStore(MemoryStore):
         """
         with self._lock:
             now = time.time()
-            for mid in mem_ids:
-                row = self._conn.execute(
-                    "SELECT fsrs_json FROM memories WHERE id = ? AND scope = ?", (mid, scope)
-                ).fetchone()
-                if row is None:
-                    continue
+            if not mem_ids:
+                return
+            # P1-1：批量单查询（IN）→ 单事务批量 UPDATE，替代逐条 SELECT+UPDATE，
+            # Search 热路径时延不再随命中数线性涨（commit 从 N 次降为 1 次…保持 1 次）
+            placeholders = ",".join("?" for _ in mem_ids)
+            rows = self._conn.execute(
+                f"SELECT id, fsrs_json FROM memories WHERE scope = ? AND id IN ({placeholders})",
+                [scope, *mem_ids],
+            ).fetchall()
+            updates: list[tuple[str, str, str]] = []
+            for row in rows:
                 fsrs = FSRSState(**json.loads(row["fsrs_json"]))
                 fsrs.last_review_at = now
                 fsrs.consolidation_level += 1
                 fsrs.stability = min(fsrs.stability * FSRS_S_GAIN, FSRS_S_CAP_DAYS)
-                self._conn.execute(
-                    "UPDATE memories SET fsrs_json = ? WHERE id = ? AND scope = ?",
-                    (fsrs.model_dump_json(), mid, scope),
-                )
+                updates.append((fsrs.model_dump_json(), row["id"], scope))
+            self._conn.executemany(
+                "UPDATE memories SET fsrs_json = ? WHERE id = ? AND scope = ?",
+                updates,
+            )
             self._conn.commit()
 
     def add_links(self, mem_id: str, scope: str, link_target_ids: list[str]) -> int:

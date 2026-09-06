@@ -49,21 +49,25 @@ class GovernanceEngine:
         return mem.content[:10]
 
     def find_conflicts(self, new_mem: MemoryInstance, scope: str) -> list[MemoryInstance]:
-        """找同 subject 同 slot 的旧活跃记忆（候选冲突对象）。"""
+        """找同 subject 同 slot 的旧活跃记忆（候选冲突对象）。
+
+        P1-2（2026-09-06）：原实现对每候选一次 store.get（N 次独立查询 + 解码）；
+        改为单次 SELECT * 全量取回后统一用 _row_to_mem 解码（与 store.get 同一构建器，
+        语义 1:1）——逐 chunk Add 的治理开销从 O(N) 次查询降到 1 次查询 + O(N) 解码
+        （解码仅活跃集一次，缓存友好；万条级实测见 tests/test_hotpath_complexity.py）。
+        """
         subject = self._subject_key(new_mem)
         slot = self._slot_key(new_mem)
         if not subject:
             return []
         rows = self._store.connection.execute(
-            "SELECT id FROM memories WHERE scope = ? AND status = ? "
+            "SELECT * FROM memories WHERE scope = ? AND status = ? "
             "AND id != ?",
             (scope, MemoryStatus.ACTIVE.value, new_mem.id),
         ).fetchall()
         conflicts = []
         for r in rows:
-            old = self._store.get(r["id"], scope)
-            if old is None:
-                continue
+            old = self._store._row_to_mem(r)
             if self._subject_key(old) != subject:
                 continue
             # 同槽 或 共享实体 或 语义高度重叠
