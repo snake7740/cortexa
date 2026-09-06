@@ -1,8 +1,12 @@
 """recency-arbitrated retrieval（2026-09-06，审计后唯一立项轴）。
 
-读时仲裁：同一 subject 的冲突簇(簇内存在两两共享实义词/非主体实体对)内，
-按事件时间显式重排为最新在前——"当前有效"占簇首，旧态保留作支撑。
-与治理 v2 启发同源；默认关(recency_arbitration_enabled)；确定性、不改召回集。
+读时仲裁：同一 subject 的冲突簇内，按事件时间显式重排为最新在前——"当前有效"
+占簇首，旧态保留作支撑。与治理 v2 启发同源；默认关(recency_arbitration_enabled)；
+确定性、不改召回集。
+冲突键 v2（2026-09-06 外部复核）：只认『属性相关』信号——共享非主体实体 / 同属性槽
+(entities[1] 或 topic≠subject) / 共享非泛词内容词（排除高频谓词与主语词元）。
+修复跨属性误冲突："alice works at google" 与 "alice's brother works at microsoft"
+共享 works 但属性不同——不再仲裁。
 """
 from __future__ import annotations
 
@@ -17,6 +21,20 @@ _STOP = frozenset({
     "our", "your", "their", "into", "over", "under", "then", "than", "also",
 })
 
+# 高频谓词/无属性信息量词（v2，2026-09-06）：单独出现不足以证明两记忆谈同一属性
+# （治理 _GENERIC_ATTR 同源思路；"works" 案例=Alice 雇主 vs 其兄弟雇主）。
+_GENERIC = frozenset({
+    "works", "worked", "working", "lives", "lived", "living", "moved",
+    "moving", "moves", "likes", "liked", "loves", "loved", "bought", "buys",
+    "wants", "wanted", "went", "goes", "going", "came", "told", "said",
+    "made", "makes", "got", "getting", "started", "starting", "starts",
+    "joined", "attended", "visiting", "visited", "planned", "planning",
+    "thinks", "thought", "feels", "felt", "seems", "hoping", "hoped",
+    "looking", "asked", "asking", "trying", "tried", "helps", "helped",
+    "using", "used", "uses", "talks", "talked", "talking", "enjoys",
+    "prefers", "preferred", "decided", "deciding", "considered", "mentioned",
+})
+
 
 def subject_of(mem: MemoryInstance) -> str | None:
     if mem.entities:
@@ -27,8 +45,12 @@ def subject_of(mem: MemoryInstance) -> str | None:
 
 
 def _terms(mem: MemoryInstance) -> set[str]:
+    """属性相关内容词：≥5 字符、非停用/非泛词、非主语词元（主语共享不算冲突证据）。"""
+    s = subject_of(mem)
+    subj_toks = set((s or "").split())
     return {w for w in re.findall(r"[a-z0-9']+", (mem.content or "").lower())
-            if len(w) >= 5 and w not in _STOP}
+            if len(w) >= 5 and w not in _STOP and w not in _GENERIC
+            and w not in subj_toks}
 
 
 def _attr(mem: MemoryInstance) -> set[str]:
@@ -41,8 +63,24 @@ def _ts(mem: MemoryInstance) -> int:
             else mem.created_ts_ms or 0)
 
 
+def _slot(mem: MemoryInstance) -> str | None:
+    """属性槽（治理 v2 _slot_key 同源）：属性实体 entities[1]，否则 topic(≠主语)。"""
+    s = subject_of(mem)
+    if len(mem.entities or []) >= 2:
+        return mem.entities[1].lower()
+    if mem.topic and (s is None or mem.topic.lower() != s):
+        return mem.topic.lower()
+    return None
+
+
 def _conflict(a: MemoryInstance, b: MemoryInstance) -> bool:
-    return bool(_terms(a) & _terms(b)) or bool(_attr(a) & _attr(b))
+    """高置信冲突（v2）：共享非主体实体 / 同属性槽 / 共享属性相关词，三者任一。"""
+    if bool(_attr(a) & _attr(b)):
+        return True
+    ka, kb = _slot(a), _slot(b)
+    if ka and ka == kb:
+        return True
+    return bool(_terms(a) & _terms(b))
 
 
 def arbitrate(scored: list, top_n: int = 50) -> list:

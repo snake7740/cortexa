@@ -37,6 +37,15 @@ def test_rar_no_conflict_no_bonus() -> None:
     assert [m.id for m, _s in out] == ["a", "b"]  # 无冲突簇不动
 
 
+def test_rar_cross_attribute_shared_word_no_false_conflict() -> None:
+    # v3 复核反例（2026-09-06）：共享 'works' 但属性不同（雇主 vs 兄弟雇主）——
+    # 不得判冲突重排（旧条留在原位，新条不翻前）
+    a = _mem("a", "Alice", 1_646_000_000_000, "Alice works at Google", "Google")
+    b = _mem("b", "Alice", 1_676_000_000_000, "Alice's brother works at Microsoft", "brother")
+    out = arbitrate([(a, 1.0), (b, 1.0)], top_n=50)
+    assert [m.id for m, _s in out] == ["a", "b"]
+
+
 def test_rar_e2e_newest_surfaces_first() -> None:
     with tempfile.TemporaryDirectory(prefix="rar-") as td:
         settings = Settings(data_dir=Path(td), embedding_provider="hash",

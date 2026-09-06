@@ -50,3 +50,37 @@ def test_f2_relative_time_anchor() -> None:
     cn = parse_relative_time("上个月搬的家，去年离职。", ref)
     assert any("rel:上个月" in c for _t, c in cn)
     assert any("rel:去年" in c for _t, c in cn)
+
+
+def test_f2_calendar_arithmetic_month_leap() -> None:
+    """v3 复核（2026-09-06）：月/年按真实日历回溯——月底与闰日裁剪，非 30/365 天近似。"""
+    from datetime import datetime, timezone
+
+    def utc_date(ms: int):
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).date()
+
+    def ref_of(y: int, mo: int, d: int) -> int:
+        return int(datetime(y, mo, d, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+    # 月底裁剪：05-31 减 1 月 → 04-30（30 天近似会错成 05-01）
+    o = parse_relative_time("1 month ago", ref_of(2026, 5, 31))
+    ts = next(t for t, c in o if c.startswith("rel:1 month ago"))
+    d0 = utc_date(ts)
+    assert (d0.year, d0.month, d0.day) == (2026, 4, 30), d0
+
+    # 闰日裁剪：2024-02-29 last year → 2023-02-28
+    o = parse_relative_time("last year", ref_of(2024, 2, 29))
+    ts = next(t for t, c in o if c.startswith("rel:last year"))
+    d0 = utc_date(ts)
+    assert (d0.year, d0.month, d0.day) == (2023, 2, 28), d0
+
+    # 非闰 2 月裁剪：2026-03-31 上个月 → 2026-02-28
+    o = parse_relative_time("上个月", ref_of(2026, 3, 31))
+    ts = next(t for t, c in o if c.startswith("rel:上个月"))
+    d0 = utc_date(ts)
+    assert (d0.year, d0.month, d0.day) == (2026, 2, 28), d0
+
+    # 天/周语义不变：仍是 24h 减法
+    o = parse_relative_time("2 weeks ago", ref_of(2026, 5, 31))
+    ts = next(t for t, c in o if c.startswith("rel:2 weeks ago"))
+    assert abs((ref_of(2026, 5, 31) - ts) - 14 * 86_400_000) < 1000
