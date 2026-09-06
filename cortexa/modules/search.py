@@ -105,6 +105,7 @@ def search_memory(
     scope: str,
     top_k: int,
     journal: TaskJournal | None = None,
+    options: list[str] | None = None,
 ) -> list[SearchResult]:
     """Search 契约的实现核心。返回官方四字段降序数组。
 
@@ -114,6 +115,13 @@ def search_memory(
     """
     started = time.perf_counter()
     k = max(1, min(top_k, settings.max_top_k))
+
+    # G1（2026-09-06，InvMem 查询构造）：选择题把 question+options 拼接为统一
+    # 检索查询——选项里的实体/候选事实也参与召回；原文案/限流由官方 Answer 侧管。
+    # 只用于各通道检索与向量化，journal 仍记录原始 query（可审计）。
+    eff_query = query
+    if options:
+        eff_query = (query + " " + " ".join(options)).strip()
 
     def _empty_journal() -> list[SearchResult]:
         if journal is not None:
@@ -142,7 +150,7 @@ def search_memory(
             hits[mem.id] = (mem, fused[mem.id])
             srcs.setdefault(mem.id, set()).add(channel)
 
-    _merge(store.fts_search(query, scope, limit=k * 3), "fts",
+    _merge(store.fts_search(eff_query, scope, limit=k * 3), "fts",
            settings.rrf_lexical_weight)
     _provider = settings.embedding_provider
     # G1 语义软通道（2026-09-06）：openai provider + semantic_channel + 存在索引才走；
@@ -157,10 +165,10 @@ def search_memory(
         # 双通道并存由 RRF 天然降权，各自补位。
         # 语义模式小改（2026-09-06，单点可回退）：候选不足是弱题漏检主因——
         # 仅在语义通道开启时把 FTS 候选加宽到 80 并入融合；hash 默认路径零改动。
-        _merge(store.fts_search(query, scope, limit=80), "fts",
+        _merge(store.fts_search(eff_query, scope, limit=80), "fts",
                settings.rrf_lexical_weight)
         sem_mems = store.sem_search(
-            llm.embed([query])[0], scope, limit=settings.semantic_candidates,
+            llm.embed([eff_query])[0], scope, limit=settings.semantic_candidates,
             min_cos=settings.vector_min_cos,
         )
         _merge(sem_mems, "sem")
@@ -172,7 +180,7 @@ def search_memory(
             from ..llm import HashEmbedder
             _merge(
                 store.vector_search(
-                    HashEmbedder(dim=hdim).embed(query), scope, limit=k * 3,
+                    HashEmbedder(dim=hdim).embed(eff_query), scope, limit=k * 3,
                     min_cos=settings.vector_min_cos_hash,
                 ), "vec", settings.rrf_vector_weight,
             )
@@ -180,16 +188,16 @@ def search_memory(
         # hash 向量与语义索引分库共存；hash provider 永不触碰 sem 表
         _merge(
             store.vector_search(
-                llm.embed([query])[0], scope, limit=k * 3,
+                llm.embed([eff_query])[0], scope, limit=k * 3,
                 min_cos=settings.vector_min_cos_hash,
             ), "vec", settings.rrf_vector_weight,
         )
     # provider=openai 且（semantic_channel 关 或 无索引）：FTS/chapter/entity 兜底，
     # 不发 hash 向量（防 512/1024 维数错乱）
     if settings.entity_channel:
-        _merge(store.entity_search(query, scope, limit=k * 3), "entity")
+        _merge(store.entity_search(eff_query, scope, limit=k * 3), "entity")
     if settings.chapter_channel:
-        chapter_nos = extract_chapter_nos(query)
+        chapter_nos = extract_chapter_nos(eff_query)
         if chapter_nos:
             ch_mems = store.chapter_search(chapter_nos, scope, limit=k * 3)
             _merge(ch_mems, "chapter")

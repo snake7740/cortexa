@@ -144,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 scope=req.scope,
                 top_k=req.top_k,
                 journal=journal,
+                options=req.options,  # G1：选择题选项参与统一召回（InvMem 查询构造）
             )
         )
 
