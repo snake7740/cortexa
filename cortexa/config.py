@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     # ---- T1.2 F2（2026-09-06，AMI/CHM 写入层时间锚定）----
     # 相对时间→绝对时间解析器开关（写入期消费；默认关）
     time_anchor_enabled: bool = False
+    # R1 年龄衰减排序（2026-09-06）：按事件时间 age 下调检索权重；RULE 豁免；默认关
+    time_decay_enabled: bool = False
+    time_decay_half_days: float = 180.0
+    # R3 内容驱动 forget（AML D 删除/遗忘合规）：Add 指令删除目标记忆
+    content_forget_enabled: bool = True
+    # R4 时间过滤通道：查询年份线索按 event_ts 过滤候选；默认关
+    temporal_filter_enabled: bool = False
     vector_min_cos: float = 0.05  # 语义通道相关性下限：低于此值不进入融合（precision-first）
     # hash 嵌入专用下限（2026-09-04 维度 G 修复）：hash 词袋余弦 = 词重叠比例，
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。

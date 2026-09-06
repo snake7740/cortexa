@@ -90,6 +90,24 @@ def run_add(
             from ..enhance_stats import stats
             stats.inc("governance", err=_exc)
 
+    # ---- R3 内容驱动 forget（AML D 删除/遗忘合规；指令消息作用于已存记忆）----
+    if settings.content_forget_enabled:
+        try:
+            from .content_forget import forget_matching, parse_forget
+            for _msg in req.messages:
+                _target = parse_forget(_msg.content)
+                if _target:
+                    _n = forget_matching(store, req.scope, _target)
+                    if _n and journal is not None:
+                        journal.record(
+                            "forget", scope=req.scope, session_id=req.session_id,
+                            request_id=req.request_id, reason="content_forget",
+                            target=_target[:120], forgotten=_n,
+                        )
+        except Exception as _exc:  # noqa: BLE001 —— forget 处理失败不阻断 Add，进观察面
+            from ..enhance_stats import stats
+            stats.inc("forget", err=_exc)
+
     # ---- 合规登记：scope 元数据（P0-3：30 天 TTL 清扫依据）----
     # eval 部署（参赛评测）source=eval 的 scope 才会被启动清扫删除；真实使用 app 不删。
     if req.scope:

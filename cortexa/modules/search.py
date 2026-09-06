@@ -230,11 +230,22 @@ def search_memory(
         if mem.mem_type.value == "RULE":
             score *= settings.rule_boost  # 维度 F：规则稳定可见
         score *= _retention_factor(mem, settings)  # 保留度调制（首过中性，零退化）
+        if settings.time_decay_enabled and not (mem.no_decay):
+            # R1 年龄衰减（默认关）：RULE 之外按事件时间降权（旧→低）
+            from .decay import age_factor
+            _ts = mem.event_ts_ms if mem.event_ts_ms is not None else mem.created_ts_ms
+            score *= age_factor(_ts, half_days=settings.time_decay_half_days)
         if bonus:
             score += bonus.get(mem.id, 0.0)
         scored.append((mem, score))
 
     scored.sort(key=lambda pair: pair[1], reverse=True)
+    if settings.temporal_filter_enabled:
+        # R4 时间过滤（默认关）：查询年份线索按 event_ts 年份过滤（RULE 豁免在模块内）
+        from .temporal_filter import apply_year_filter, year_cues
+        _years = year_cues(eff_query)
+        if _years:
+            scored = apply_year_filter(scored, _years, set())
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关

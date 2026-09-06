@@ -28,6 +28,33 @@ DROP_TOLERANCE = 0.02
 sys.path.insert(0, str(EXAMPLES))
 from local_eval import run_eval  # noqa: E402  # 自足：examples 非包
 
+PARA_TOLERANCE = 0.05  # R2：A 面 paraphrase 召回允许下降幅度
+
+
+def _para_direct() -> float | None:
+    """InMind direct 125 题 A 面 paraphrase 召回（hash top_k=5；无数据文件返回 None）。"""
+    p = ROOT / "data" / "aml-materials" / "inmind_conv.jsonl"
+    if not p.exists():
+        return None
+    import json as _json
+
+    from aml_replay import run_replay_convs
+
+    convs = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            convs.append(_json.loads(line))
+    rep = run_replay_convs(convs, out_dir=None, top_k=5)
+    hit = 0
+    tot = 0
+    for q in rep["questions"]:
+        if q["qid"].endswith("-direct"):
+            tot += 1
+            if q["evidence"] and q["evidence"][0]["bucket"] == "hit":
+                hit += 1
+    return round(hit / max(tot, 1), 3) if tot else None
+
 
 def _ratio(value: str) -> float:
     """'3/3' -> 1.0；异常视为 0（防漏计）。"""
@@ -80,11 +107,16 @@ def evaluate() -> tuple[bool, dict, list[str]]:
 
 def write_baseline() -> dict:
     summary = _current_summary()
+    metrics = _flatten(summary)
+    para = _para_direct()
+    if para is not None:
+        metrics["para_direct"] = para
     payload = {
         "note": "local_eval 内置题集默认档(entity_channel=False, scene=aml)检索质量基线；"
-                "任何检索侧改动(通道/融合/排序)后 hit@1/hit@5/mrr 与治理/维度比率下降 >0.02 即回归(A1, 2026-09-06)",
+                "检索侧改动后 hit@1/hit@5/mrr 与治理/维度比率下降 >0.02 即回归(A1)；"
+                "para_direct=A 面 paraphrase 召回(InMind direct, 容差 0.05, R2)",
         "tolerance": DROP_TOLERANCE,
-        "metrics": _flatten(summary),
+        "metrics": metrics,
         "summary_human": summary,
     }
     BASELINE_PATH.write_text(
@@ -106,6 +138,16 @@ def main() -> int:
         return 0
 
     ok, cur, failures = evaluate()
+    base = load_baseline()
+    para = _para_direct()
+    if para is not None:
+        cur["para_direct"] = para
+        floor = base.get("para_direct")
+        if floor is not None and para < floor - PARA_TOLERANCE:
+            failures.append(
+                f"para_direct(A 面释义): {para:.3f} < 基线 {floor:.3f} - 容差 {PARA_TOLERANCE}"
+            )
+            ok = False
     print("[retrieval-gate] 当前档指标：")
     for k, v in sorted(cur.items()):
         print(f"  {k}: {v:.3f}" if isinstance(v, float) else f"  {k}: {v}")

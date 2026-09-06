@@ -2,6 +2,11 @@
 
 > 让 AI 的记忆像人类一样活着：它会成长、会巩固、会遗忘、会自我完善。
 
+> **口径说明（R6，2026-09-06）**：成长/巩固/遗忘类仿真机制（FSRS 巩固调度、
+> Dreaming Cycle 等）是**真实使用与研发中**机制，其中 FSRS 检索调制在首次评测
+> （无复习史）为中性、不构成参赛提分宣称；参赛口径（能力/开关/阶段/证据）以
+> docs/mechanism-status.md 为准。
+
 Cortexa 是面向 [Agent Memory Leaderboard (AML)](https://agentmemoryleaderboard.ai/) 挑战赛的
 长期记忆系统。系统只暴露两个记忆操作——**Add**（写入记忆）与 **Search**（返回记忆证据），
 回答生成与评分由平台统一完成。
