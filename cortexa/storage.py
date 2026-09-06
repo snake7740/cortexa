@@ -180,6 +180,11 @@ _FTS_EN_STOP = frozenset({
 })
 
 
+# ---- FSRS 稳定性增长常量（P1-6，2026-09-06）----
+FSRS_S_GAIN = 1.15  # 每次成功检索 stability × 1.15（R(t)=（1+t/(9S))^-1 → S 越大衰减越慢）
+FSRS_S_CAP_DAYS = 3650.0  # 封顶 10 年，防重复命中导致 S 失控
+
+
 def _fts_escape(query: str) -> str:
     """把自然语言查询转成 FTS5 安全的 OR 词元匹配（防语法错误与注入）。
 
@@ -624,9 +629,10 @@ class SQLiteMemoryStore(MemoryStore):
     def touch_retrieval(self, mem_ids: list[str], scope: str) -> None:
         """检索命中即强化（测试效应，Science 2008 / 论证文档 2026-08-31 第三节）：
 
-        命中记忆的 FSRS last_review_at 重置、巩固等级 +1（R(t) 恢复，为后续
-        retrieval_weight×R(t) 融合调制提供状态）。RULE/no_decay 同样更新——
-        巩固只增不减，与衰减调制无关；遗忘引擎建模见 docs/research 论证。
+        命中记忆的 FSRS last_review_at 重置、巩固等级 +1、stability 按成功检索增长
+        （P1-6：最小稳定性更新，兑现「用得越多越牢」——S' = S × FSRS_S_GAIN，
+        封顶 FSRS_S_CAP_DAYS 防失控）。RULE/no_decay 同样更新——巩固只增不减，
+        与衰减调制无关；遗忘/失败驱动的 S 下调与遗忘引擎建模见 docs/research 论证。
         """
         with self._lock:
             now = time.time()
@@ -639,6 +645,7 @@ class SQLiteMemoryStore(MemoryStore):
                 fsrs = FSRSState(**json.loads(row["fsrs_json"]))
                 fsrs.last_review_at = now
                 fsrs.consolidation_level += 1
+                fsrs.stability = min(fsrs.stability * FSRS_S_GAIN, FSRS_S_CAP_DAYS)
                 self._conn.execute(
                     "UPDATE memories SET fsrs_json = ? WHERE id = ? AND scope = ?",
                     (fsrs.model_dump_json(), mid, scope),

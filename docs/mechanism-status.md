@@ -18,7 +18,7 @@
 | precision-first 截断 + 缺席闸 | search.py（空 scope O(1) 返空） | — | ✅ 已实现 | W2 | test_search_returns_empty_array |
 | RULE 专属 Wing（永不衰减 + rule_boost） | models.MemoryType.RULE + no_decay；search._retention_factor | rule_boost=1.25；rule_llm_fallback=True | ✅ 已实现 | W2/维度F | test_smoke::test_rule_memory_cannot_be_forgotten |
 | 维度地板审计（压缩前结构不丢） | modules/dimension_floor.py（enforce/assert_floor） | — | ✅ 已实现 | W2 | test_basic |
-| FSRS 遗忘曲线检索调制 | models.FSRSState.retrievability；search._retention_factor | retrieval_fusion_weight=0.15（首过中性） | ✅ 已实现（调制）；**stability 增长未实现** | W3/P1-6 | test_review_fixes::TestFSRSRetentionModulation |
+| FSRS 遗忘曲线检索调制 + 稳定性增长 | models.FSRSState.retrievability；search._retention_factor；storage.touch_retrieval（S'=S×1.15 封顶 3650 天） | retrieval_fusion_weight=0.15（首过中性） | ✅ 已实现；**P1-6 最小稳定性更新 2026-09-06 落地**（越用越牢兑现） | W3/P1-6 | test_review_fixes::TestFSRSRetentionModulation + tests/test_fsrs_growth.py |
 | 巩固即复习（touch） | storage.touch_retrieval | — | ✅ 已实现 | W3 | test_journal::TestFsrsRetrievalReinforcement |
 | RARE-lite（检索命中两两关联） | novel_adapter.rare_strengthen | rare_enabled=True；rare_top_n=5 | ✅ 已实现 | W3 | test_rare.py |
 | 完整 RARE 四步重编码 | — | — | ⛔ 未实现 | P4 | README 术语表如实标注 |
