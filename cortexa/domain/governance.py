@@ -28,9 +28,32 @@ class GovernanceEngine:
         self._store = store
         self._schema = schema or get_schema("aml")
 
-    # 否定/取代词（新陈述含这些 → 倾向取代旧陈述）
-    _NEGATE = re.compile(r"(?:不|不再|no longer|don't|doesn't|不是|改为|换成|现在是|actually)")
-    # 同属性槽的相似度启发（MVP：topic 相同 或 共享实体）
+    # 否定/取代词（新陈述含这些 → 倾向取代旧陈述）。
+    # v2（2026-09-06 治理精度审计）：EN 一律整词/整短语匹配（词边界）——
+    # 子串误命中案例：schema 'now' 命中 "I already k**now** he loves..."。
+    _NEGATE_TOKENS = (
+        "no longer", "don't", "doesn't", "isn't", "can't", "cannot",
+        "not allowed", "actually", "不", "不再", "不是", "改为", "换成", "现在是",
+    )
+    # 假设/问句防护：这些形态不是"当前状态已更新"的断言，不得触发取代
+    # （案例：'do you think it's possible to also set a time limit...' 是对未来的
+    #  打算/询问，不是"日均屏幕时长已被更新"）。
+    _HYPOTHETICAL = (
+        "do you think", "what do you think", "is it possible", "should i",
+        "could we", "maybe i", "do you have any", "any recommendations",
+        "would you recommend", "does that sound", "would that be", "i wonder",
+    )
+    # 跨属性误杀防护用通用词（属性论元过滤器：'time/social/limit' 之类在闲聊
+    # 与事实陈述里都会出现，不能当同一属性的证据）。
+    _GENERIC_ATTR = frozenset({
+        "time", "times", "screen", "app", "apps", "social", "media", "day",
+        "days", "hour", "hours", "week", "weeks", "month", "months", "thing",
+        "things", "stuff", "bit", "lot", "really", "much", "more", "new",
+        "know", "think", "would", "great", "special", "limit", "limits",
+        "idea", "ideas", "possible", "spending", "way", "setting", "set",
+        "like", "love", "get", "got", "getting", "recommendation",
+        "recommendations", "starting", "point", "past", "two", "one",
+    })
 
     def _subject_key(self, mem: MemoryInstance) -> str:
         """提取 subject（user/实体）：entities[0] 或 topic，缺省 content 前 6 字。"""
@@ -41,12 +64,15 @@ class GovernanceEngine:
         return mem.content[:6]
 
     def _slot_key(self, mem: MemoryInstance) -> str:
-        """属性槽：topic 或 entities[1] 或 content 前 10 字（同槽新旧才可比）。"""
-        if mem.topic:
-            return mem.topic
-        if len(mem.entities) > 1:
-            return mem.entities[1]
-        return mem.content[:10]
+        """属性槽 v2：优先属性实体 entities[1]；否则 topic（若不同于主语）；
+        否则内容前缀。修复 v1 缺陷：topic=主语首实体使同主体所有陈述同槽
+        （案例：Max 的品种 vs Max 的玩具被当成同一槽）。"""
+        if len(mem.entities) >= 2:
+            return mem.entities[1].lower()
+        subject = (self._subject_key(mem) or "").lower()
+        if mem.topic and mem.topic.lower() != subject:
+            return mem.topic.lower()
+        return (mem.content or "")[:10].lower()
 
     def find_conflicts(self, new_mem: MemoryInstance, scope: str) -> list[MemoryInstance]:
         """找同 subject 同 slot 的旧活跃记忆（候选冲突对象）。
@@ -123,43 +149,90 @@ class GovernanceEngine:
         old_set = {e.lower() for e in (old.entities or []) if e.lower() != subject}
         return bool(new_set & old_set)
 
-    def should_supersede(self, new_mem: MemoryInstance, old: MemoryInstance) -> bool:
-        """新陈述是否明确取代旧陈述（含否定/更新词）。不猜——无信号不取代。
+    @staticmethod
+    def _word_tokens(text: str) -> set[str]:
+        """英文/数字/撇号词元集合（词边界信号用，避免 now 命中 know）。"""
+        return set(re.findall(r"[a-z0-9']+", (text or "").lower()))
 
-        防过度（2026-09-04 实测修复）：词信号命中只是"候选"——同一 subject 可能
-        有多条不同属性的陈述（如 Alice 的饮料偏好 vs Alice 的宠物），治理词必须
-        同时命中"新旧谈同一属性"才 supersede，避免误杀同主体无关记忆。
+    @classmethod
+    def _word_hit(cls, word: str, toks: set[str], joined: str, raw_low: str) -> bool:
+        """整词/整短语匹配；无 ascii 的词（中文）保留子串语义（v1 行为）。"""
+        if any(ch.isascii() and ch.isalpha() for ch in word):
+            if " " in word:
+                return word in joined
+            return word in toks
+        return word in raw_low
+
+    def _signal(self, text: str) -> tuple[str, str] | None:
+        """治理信号（v2，词边界）：negate 词优先，再 schema 治理词。"""
+        raw = text or ""
+        low = raw.lower()
+        toks = self._word_tokens(low)
+        joined = " ".join(re.findall(r"[a-z0-9']+", low))
+        for w in self._NEGATE_TOKENS:
+            if self._word_hit(w, toks, joined, low):
+                return ("negate", w)
+        for w in (self._schema.event_predicates.get("supersede", ())
+                  + self._schema.event_predicates.get("update", ())
+                  + self._schema.event_predicates.get("withdraw", ())):
+            if self._word_hit(w, toks, joined, low):
+                return ("schema", w)
+        return None
+
+    @staticmethod
+    def _hypothetical(text: str) -> bool:
+        """新陈述是问句/对未来打算/征询意见 → 不是当前状态更新，拒绝取代。
+
+        实测案例 545bd2b5：'do you think it's possible to also set a time
+        limit...' 含 don't（词边界信号命中）但语义是询问建议，不是『日均
+        2 小时已被更新』——不取代旧陈述。
+        """
+        low = (text or "").lower()
+        if "?" in text or "？" in text:
+            return True
+        return any(p in low for p in GovernanceEngine._HYPOTHETICAL)
+
+    def _attr_terms(self, mem: MemoryInstance) -> set[str]:
+        """属性论元词（同属性判据）：非停用/非主语实体/非通用词的内容词。"""
+        subject_terms = {e.lower() for e in (mem.entities or [])}
+        skip = self._TOPIC_STOP | subject_terms | self._GENERIC_ATTR
+        return {
+            w for w in re.findall(r"[a-z][a-z']{2,}", (mem.content or "").lower())
+            if w not in skip
+        }
+
+    def should_supersede(self, new_mem: MemoryInstance, old: MemoryInstance) -> bool:
+        """新陈述是否明确取代旧陈述（v2，2026-09-06 治理精度审计修复）。
+
+        三层防过度（对应真实误杀案例）：
+        1) 信号=整词/整短语匹配——'now' 不再命中 'k**now**'（75499fd8 误杀根因）；
+        2) 问句/未来打算/征询不取代——'don't' + 'do you think...' 不更新
+           『日均 2 小时』事实（545bd2b5 误杀根因）；
+        3) 同属性才取代：同槽（属性实体）或共享属性论元词或共享非主语实体；
+           纯子串包含恒取代（同句改写）。不猜——以上任一不满足即 kept。
         """
         new_text = new_mem.content
         old_text = old.content
-        # 信号 1/2：否定词 或 schema 治理词（supersede/update/withdraw 类）
-        signaled = False
-        if self._NEGATE.search(new_text):
-            signaled = True
-        else:
-            for w in (self._schema.event_predicates.get("supersede", ())
-                      + self._schema.event_predicates.get("update", ())
-                      + self._schema.event_predicates.get("withdraw", ())):
-                if w.lower() in new_text.lower():
-                    signaled = True
-                    break
-        if not signaled:
+        sig = self._signal(new_text)
+        if sig is None:
             return False
-        # 信号 3：内容同主题（防治理过度——同 subject 不同属性不得互相取代）
-        return self._topic_overlap(new_text, old_text, new_mem, old)
+        if self._hypothetical(new_text):
+            return False
+        if old_text in new_text or new_text in old_text:
+            return True
+        if self._slot_key(new_mem) == self._slot_key(old):
+            return True
+        if self._attr_terms(new_mem) & self._attr_terms(old):
+            return True
+        subject = self._subject_key(new_mem).lower()
+        new_set = {e.lower() for e in (new_mem.entities or []) if e.lower() != subject}
+        old_set = {e.lower() for e in (old.entities or []) if e.lower() != subject}
+        return bool(new_set & old_set)
 
-    @classmethod
-    def _signal_desc(cls, text: str, schema: SceneSchema) -> str:
-        """治理命中的信号描述（审计 reason 用）：否定词 or schema 治理词。"""
-        m = cls._NEGATE.search(text or "")
-        if m:
-            return f"negate:{m.group(0).strip().lower()}"
-        for w in (schema.event_predicates.get("supersede", ())
-                  + schema.event_predicates.get("update", ())
-                  + schema.event_predicates.get("withdraw", ())):
-            if w.lower() in (text or "").lower():
-                return f"schema:{w.lower()}"
-        return "supersede-signal"
+    def _signal_desc(self, text: str) -> str:
+        """治理命中的信号描述（审计 reason 用，journal 'govern' 事件）。"""
+        sig = self._signal(text or "")
+        return f"{sig[0]}:{sig[1]}" if sig else "supersede-signal"
 
     def govern(self, new_mem: MemoryInstance, scope: str) -> dict:
         """对新记忆执行治理：找冲突旧记忆，若新陈述取代则 supersede 旧记忆。
@@ -177,7 +250,7 @@ class GovernanceEngine:
                     result["events"].append({
                         "old_id": old.id,
                         "new_id": new_mem.id,
-                        "reason": f"{self._signal_desc(new_mem.content, self._schema)}|same-topic",
+                        "reason": f"{self._signal_desc(new_mem.content)}|same-attr",
                     })
                 except Exception as _exc:  # noqa: BLE001 —— supersede 失败转 kept 的分支，进观察面
                     from ..enhance_stats import stats
