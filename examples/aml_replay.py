@@ -119,7 +119,7 @@ def channel_recall(store: SQLiteMemoryStore, llm: LLMClient, settings: Settings,
 
 def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       provider: str = "hash", embedding_dim: int = 512,
-                      label: str = "") -> dict:
+                      label: str = "", governance_enabled: bool = True) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -133,7 +133,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
         settings = Settings(
             data_dir=Path(td) / "d", embedding_provider=provider,
             embedding_dim=embedding_dim, scene="aml", journal_mode="off",
-            _env_file=None,
+            governance_enabled=governance_enabled, _env_file=None,
         )
         settings.data_dir.mkdir(parents=True, exist_ok=True)  # 直连 store 需先建目录（server 路径由 create_app 代建）
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
@@ -247,7 +247,10 @@ def load_convs(path: Path) -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else [data]
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # 物理行读取：splitlines() 会按 U+2028/U+2029 等分隔符切行，而 json.dumps(
+    # ensure_ascii=False) 不会转义它们——上游文本含这些字符时会截断 JSON 行
+    # （2026-09-06 LongMemEval-S 实测踩坑）。只按 \n 切。
+    for line in path.read_text(encoding="utf-8").split("\n"):
         line = line.strip()
         if line:
             out.append(json.loads(line))
@@ -266,18 +269,31 @@ def main() -> None:
                     help="向量维度：hash=512（默认）；minilm=384")
     ap.add_argument("--label", default="",
                     help="报告 label（成对实验区分档位；默认取 provider 名）")
+    ap.add_argument("--no-governance", dest="governance_enabled",
+                    action="store_false", default=True,
+                    help="关闭治理 supersede（诊断：证据被治理标旧时用）")
     ap.add_argument("--selfcheck", action="store_true", help="跑内置微型集（无数据可演示）")
     args = ap.parse_args()
 
     if args.selfcheck:
         convs = SELFCHECK_CONVS
     elif args.data is not None:
+        if not args.data.exists():
+            print(
+                f"[aml_replay] 数据文件不存在：{args.data}\n"
+                "  示例占位符(your_convs.jsonl)不会自己变成数据。\n"
+                "  方法：下载 LongMemEval-S/LoCoMo 后先用转换器转成本工具 JSONL，\n"
+                "  或运行 --selfcheck 用内置微型集看全链路。",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         convs = load_convs(args.data)
     else:
         ap.error("需要 --data 或 --selfcheck")
     run_replay_convs(convs, out_dir=args.out, top_k=args.top_k,
                      provider=args.provider, embedding_dim=args.embedding_dim,
-                     label=args.label)
+                     label=args.label,
+                     governance_enabled=args.governance_enabled)
 
 
 if __name__ == "__main__":
