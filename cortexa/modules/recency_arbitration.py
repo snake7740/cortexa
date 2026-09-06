@@ -115,72 +115,92 @@ def _conflict(a: MemoryInstance, b: MemoryInstance) -> bool:
     return bool(_terms(a) & _terms(b))
 
 
-def _conflicted_clusters(scored: list, top_n: int) -> list[tuple[int, ...]]:
-    """返回需要仲裁的冲突簇（位置元组，含 ≥2 成员、存在冲突对、时间可分）。"""
-    clusters: dict[str, list[int]] = {}
+def _components(scored: list, top_n: int) -> list[dict]:
+    """冲突图连通分量（v4，2026-09-06 side-effect 审计修复）。
+
+    原实现按 subject 分组：同 subject 组内只要存在一对真冲突，整组全部按时间重排——
+    非冲突成员（属格 decoy/跨属性句/共享词伪边句）被顺带扫动，这正是 T6 在
+    false_conflict=0 时仍 0/10 的根因。v4 改为：同 subject 组内以 pairwise _conflict
+    建图取连通分量，只有分量成员参与仲裁；无冲突边的成员位置严格不动
+    （不变量：non_conflict_candidate_order_changed = 0）。
+    """
+    from collections import defaultdict
+    subjects: dict[str, list[int]] = defaultdict(list)
     for i, (mem, _s) in enumerate(scored[:top_n]):
         s = subject_of(mem)
         if s:
-            clusters.setdefault(s, []).append(i)
-    conflicted: list[tuple[int, ...]] = []
-    for idxs in clusters.values():
+            subjects[s].append(i)
+    out: list[dict] = []
+    for s, idxs in subjects.items():
         if len(idxs) < 2:
             continue
-        mems = [scored[i][0] for i in idxs]
-        if not any(_conflict(mems[a], mems[b])
-                   for a in range(len(mems)) for b in range(a + 1, len(mems))):
-            continue
-        if len({_ts(m) for m in mems}) < 2:
-            continue
-        conflicted.append(tuple(sorted(idxs)))
-    return conflicted
+        parent = list(range(len(idxs)))
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                if _conflict(scored[idxs[a]][0], scored[idxs[b]][0]):
+                    ra_, rb_ = _find(a), _find(b)
+                    if ra_ != rb_:
+                        parent[rb_] = ra_
+        groups: dict[int, list[int]] = defaultdict(list)
+        for k in range(len(idxs)):
+            groups[_find(k)].append(k)
+        for root, ks in groups.items():
+            if len(ks) < 2:
+                continue  # 单点（无冲突边成员）不仲裁
+            comp_idxs = sorted(idxs[k] for k in ks)
+            mems = [scored[i][0] for i in comp_idxs]
+            if len({_ts(m) for m in mems}) < 2:
+                continue  # 同时刻陈述无可分先后
+            out.append({"subject": s, "idxs": comp_idxs, "members": [m.id for m in mems]})
+    return out
 
 
-def arbitrate(scored: list, top_n: int = 50, keep_prev: int = 0) -> list:
-    """冲突簇内按事件时间重排(最新在前)；无冲突簇不动。
+# 过去日期标记（G3 list-suppress 用）：内容含 "in YYYY" 的成员视为已归档的旧列表
+# 版本（"worked with vendors A and B in 2024"）；"since YYYY/is working since" 类
+# 当前持续态不带 in-年份，不被误杀。
+_PAST_YEAR = re.compile(r"\bin\s+(19|20)\d{2}\b")
 
-    keep_prev=0：reorder only（所有簇成员保留，仅调序）——C3 档。
-    keep_prev>0：C4 档——簇内只保留最新 + 至多 keep_prev 个最近的 predecessor，
-    更旧版本从返回中剔除（版本史压缩，防列表题 no-extras 污染）。返回新列表。
+
+def arbitrate(scored: list, top_n: int = 50, keep_prev: int = 0,
+              list_mode: bool = False) -> list:
+    """冲突分量内按事件时间重排(最新在前)；无冲突边成员位置不动（v4）。
+
+    keep_prev=0：reorder only（分量成员保留，仅调序）——C3 档。
+    keep_prev>0：C4 档——分量内只保留最新 + 至多 keep_prev 个最近 predecessor，
+    更旧版本从返回中剔除（版本史压缩）。剔除按 id（位置会因重排失效——实测踩坑）。
+    list_mode=True（RAR-002 G3）：LIST_CURRENT 查询——最新成员恒保留；其余成员
+    若带『in YYYY』过去日期标记则剔除（旧列表版本不塞进当前列表），不带标记的
+    保留（"since YYYY" 的当前持续态成员仍是当前列表的一部分）。
     """
     out = list(scored)
-    for idxs in _conflicted_clusters(out, top_n):
-        if len(idxs) < 2:
-            continue
-        ordered = sorted(
-            [(out[i], i) for i in idxs],
-            key=lambda pair: (_ts(pair[0][0]), pair[1]),
-            reverse=True,
-        )
-        for pos, (pair, _orig_i) in zip(sorted(idxs), ordered):
-            out[pos] = pair
-        if keep_prev > 0:
-            # 剔除按 id 而非位置（重排后下标指向的内容已变化——2026-09-06 实测踩坑；
-            # 注意 ordered 元素=(mem,score,orig_i) 解包后 pair=(mem,score)，mem=pair[0]）
-            keep_ids = {pair[0].id for pair, _i in ordered[:1 + keep_prev]}
-            drop_ids = {pair[0].id for pair, _i in ordered} - keep_ids
-            if drop_ids:
-                out = [x for x in out if x[0].id not in drop_ids]
-                # 列表缩短：后续簇用新列表重扫（递归，drop 为空即终止）
-                return arbitrate(out, top_n=top_n, keep_prev=keep_prev)
+    for comp in _components(out, top_n):
+        idxs = comp["idxs"]
+        mems = [out[i][0] for i in idxs]
+        ts_sorted = sorted(mems, key=lambda m: (_ts(m), m.id), reverse=True)
+        for pos, m in zip(idxs, ts_sorted):
+            out[pos] = (m, out[pos][1])
+        drop_ids: set[str] = set()
+        if list_mode:
+            drop_ids = {m.id for m in ts_sorted[1:]
+                        if _PAST_YEAR.search(m.content or "")}
+        elif keep_prev > 0:
+            keep_ids = {m.id for m in ts_sorted[:1 + keep_prev]}
+            drop_ids = {m.id for m in ts_sorted} - keep_ids
+        if drop_ids:
+            out = [x for x in out if x[0].id not in drop_ids]
+            return arbitrate(out, top_n=top_n, keep_prev=keep_prev,
+                             list_mode=list_mode)
     return out
 
 
 def cluster_report(scored: list, top_n: int = 50) -> list[dict]:
-    """簇观测（temporal_conflict_eval_v1 仪器化）：返回冲突簇成员 id 清单。
-
-    供 false_conflict_rate 统计——truth 表交叉判定哪些簇是真属性冲突、哪些是
-    误聚（非冲突事实进了冲突簇）。
-    """
-    out = []
-    for idxs in _conflicted_clusters(scored, top_n):
-        ordered = sorted(
-            (scored[i][0] for i in idxs),
-            key=lambda m: _ts(m),
-            reverse=True,
-        )
-        out.append({
-            "subject": subject_of(ordered[0]),
-            "members": [m.id for m in ordered],
-        })
-    return out
+    """分量观测（v4）：返回将被仲裁的冲突分量成员 id 清单（truth 归因/审计用）。"""
+    return [
+        {"subject": c["subject"], "members": list(c["members"])}
+        for c in _components(scored, top_n)
+    ]

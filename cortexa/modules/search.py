@@ -273,14 +273,31 @@ def search_memory(
         if _ref_ms:
             scored = apply_relative_window(scored, query, _ref_ms)
     if settings.recency_arbitration_enabled:
-        # recency-arbitrated retrieval（默认关）：冲突簇内显式重排为最新在前
-        # （排序与时间过滤之后执行，避免被 sort 覆盖）。keep_prev>0=C4：簇内
-        # 保留最新+最近 predecessor，更旧版本剔除（防列表题版本史污染）。
+        # recency-arbitrated retrieval（默认关）：冲突分量内显式重排为最新在前
+        # （v4 分量级：无冲突边成员位置不动）。keep_prev>0=C4（保留最新+最近
+        # predecessor）。RAR-002 意图门（默认关）：仅 CURRENT/LIST_CURRENT 查询
+        # 仲裁；HISTORICAL/SEQUENCE/ENUM/DEFAULT 先走年份/相对窗过滤，不仲裁。
+        from .query_intent import classify_intent
         from .recency_arbitration import arbitrate
-        scored = arbitrate(
-            scored, top_n=settings.recency_arbitration_top_n,
-            keep_prev=settings.recency_arbitration_keep_prev,
-        )
+        if settings.recency_arbitration_intent_gated:
+            _intn = classify_intent(query)["kind"]
+            if _intn == "LIST_CURRENT":
+                scored = arbitrate(
+                    scored, top_n=settings.recency_arbitration_top_n,
+                    keep_prev=0,
+                    list_mode=settings.recency_arbitration_list_suppress,
+                )
+            elif _intn == "CURRENT":
+                scored = arbitrate(
+                    scored, top_n=settings.recency_arbitration_top_n,
+                    keep_prev=settings.recency_arbitration_keep_prev,
+                )
+            # 其它意图：不仲裁（时间件已在前面处理）
+        else:
+            scored = arbitrate(
+                scored, top_n=settings.recency_arbitration_top_n,
+                keep_prev=settings.recency_arbitration_keep_prev,
+            )
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关

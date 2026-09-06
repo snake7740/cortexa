@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     # 最近旧版本（predecessor），更旧版本从返回中剔除——对照 C3 reorder-only 的
     # 列表污染/版本史膨胀面。0=reorder only（现状）。默认 0。
     recency_arbitration_keep_prev: int = 0
+    # RAR-002（2026-09-06）：意图门控——仅 CURRENT/LIST_CURRENT 查询启用仲裁；
+    # HISTORICAL/SEQUENCE/ENUM/DEFAULT 不仲裁（历史先年份/相对窗过滤，顺序问关
+    # current-state RAR）。默认关（=旧全局仲裁语义）。
+    recency_arbitration_intent_gated: bool = False
+    # RAR-002 G3：LIST_CURRENT（当前列表）查询的 predecessor 抑制——分量内只保留
+    # 最新成员 + 未带『in YYYY』过去日期标记的成员（旧版本列表项不塞进当前列表）。
+    # 默认关。
+    recency_arbitration_list_suppress: bool = False
     vector_min_cos: float = 0.05  # 语义通道相关性下限：低于此值不进入融合（precision-first）
     # hash 嵌入专用下限（2026-09-04 维度 G 修复）：hash 词袋余弦 = 词重叠比例，
     # 语义嵌入 0.05 对 hash 过松——实测无关对 0.03-0.16、相关对 0.38+，0.25 干净分离。

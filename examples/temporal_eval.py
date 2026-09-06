@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import time
@@ -28,6 +29,7 @@ from cortexa.config import Settings  # noqa: E402
 from cortexa.llm import LLMClient  # noqa: E402
 from cortexa.models import AddRequest, AmlMessage  # noqa: E402
 from cortexa.modules.pipeline import run_add  # noqa: E402
+from cortexa.modules.query_intent import classify_intent  # noqa: E402
 from cortexa.modules.recency_arbitration import cluster_report  # noqa: E402
 from cortexa.modules.search import search_memory  # noqa: E402
 from cortexa.storage import SQLiteMemoryStore  # noqa: E402
@@ -38,7 +40,34 @@ CONFIGS = {
     "C2": {"time_anchor_enabled": True, "temporal_filter_enabled": True},
     "C3": {"recency_arbitration_enabled": True},
     "C4": {"recency_arbitration_enabled": True, "recency_arbitration_keep_prev": 1},
+    # RAR-002（意图门控；基座=C2 的 F2+R4）
+    "G1": {"time_anchor_enabled": True, "temporal_filter_enabled": True,
+           "recency_arbitration_enabled": True,
+           "recency_arbitration_intent_gated": True},
+    "G2": {"time_anchor_enabled": True, "temporal_filter_enabled": True,
+           "recency_arbitration_enabled": True,
+           "recency_arbitration_intent_gated": True,
+           "recency_arbitration_keep_prev": 1},
+    "G3": {"time_anchor_enabled": True, "temporal_filter_enabled": True,
+           "recency_arbitration_enabled": True,
+           "recency_arbitration_intent_gated": True,
+           "recency_arbitration_list_suppress": True},
 }
+
+_YEAR_RX = re.compile(r"\b(19|20)\d{2}\b")
+
+
+def gold_intent(bucket: str, query: str) -> str:
+    """语料金标意图（构造语义；与语料 qid/题型一一对应）。"""
+    if bucket == "T1":
+        return "CURRENT"
+    if bucket in ("T2", "T3"):
+        return "HISTORICAL"
+    if bucket == "T4":
+        return "SEQUENCE"
+    if bucket == "T5":
+        return "HISTORICAL" if "over time" in query else "LIST_CURRENT"
+    return "HISTORICAL" if _YEAR_RX.search(query) else "DEFAULT"
 TOP_K = 20
 DISCLAIMER = "本地代理结果（非官方成绩）：temporal_conflict_eval_v1 合成语料 x 官方契约镜像，governance 关，top_k=20。"
 
@@ -63,6 +92,10 @@ def run_config(cfg_kwargs: dict, corpus: list[dict], limit: int | None) -> dict:
     # cluster 仪器
     cluster_facts, false_facts = 0, 0
     stale_returned = stale_returned_qs = stale_same_attr_returned = 0
+    # RAR side-effect 不变量（v4 审计）：非冲突候选相对顺序不得变
+    rar_acted_q = ncviol_q = 0
+    intent_cross: Counter = Counter()  # (gold, pred) 计数
+    q_total = 0
     per_q_rows = []
     with tempfile.TemporaryDirectory(prefix="tceval-") as td:
         settings = Settings(
@@ -70,6 +103,13 @@ def run_config(cfg_kwargs: dict, corpus: list[dict], limit: int | None) -> dict:
             journal_mode="off", governance_enabled=False, _env_file=None,
             **cfg_kwargs,
         )
+        # pre 对照 settings：同配置关掉全部 recency 旋钮（测 RAR 本身的净效应）
+        _pre_kw = {k: v for k, v in cfg_kwargs.items()
+                   if not k.startswith("recency_arbitration")}
+        pre_settings = (Settings(data_dir=Path(td) / "d", embedding_provider="hash",
+                                 scene="aml", journal_mode="off",
+                                 governance_enabled=False, _env_file=None, **_pre_kw)
+                        if _pre_kw != cfg_kwargs else None)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
                                   embedding_dim=settings.embedding_dim)
@@ -101,8 +141,11 @@ def run_config(cfg_kwargs: dict, corpus: list[dict], limit: int | None) -> dict:
                     if limit is not None and n_q >= limit:
                         break
                     n_q += 1
+                    q_total += 1
                     b = q["bucket"]
                     bucket_total[b] += 1
+                    intent_cross[(gold_intent(b, q["query"]),
+                                  classify_intent(q["query"])["kind"])] += 1
                     final = search_memory(store, llm, settings, query=q["query"],
                                           scope=scope, top_k=TOP_K, journal=None)
                     st, worst = _score_q(q["evidence_texts"], final, by_hash)
@@ -131,7 +174,26 @@ def run_config(cfg_kwargs: dict, corpus: list[dict], limit: int | None) -> dict:
                         pass
                     pool = [(store.get(i, scope), 0.0) for i in pool_ids]
                     pool = [p for p in pool if p[0] is not None]
-                    for cl in cluster_report(pool, top_n=50):
+                    comps_for_q = cluster_report(pool, top_n=50)
+                    # ---- RAR side-effect 不变量（v4）：pre(无RAR) vs post(有RAR) ----
+                    # 稳定候选 = 两次都在 且 不在任何冲突分量 的 id；其相对顺序必须不变
+                    if pre_settings is not None:
+                        pre = search_memory(store, llm, pre_settings, query=q["query"],
+                                            scope=scope, top_k=TOP_K, journal=None)
+                        pre_ids = [r.id for r in pre]
+                        post_ids = [r.id for r in final]
+                        post_set = set(post_ids)
+                        reordered = set()
+                        for _cl in comps_for_q:
+                            reordered |= set(_cl["members"])
+                        stable = [i for i in pre_ids if i in post_set and i not in reordered]
+                        sub_pre = [i for i in pre_ids if i in stable]
+                        sub_post = [i for i in post_ids if i in stable]
+                        if len(stable) >= 2 and sub_pre != sub_post:
+                            ncviol_q += 1
+                        if reordered:
+                            rar_acted_q += 1
+                    for cl in comps_for_q:
                         mems = cl["members"]
                         metas = []
                         for mid in mems:
@@ -178,6 +240,11 @@ def run_config(cfg_kwargs: dict, corpus: list[dict], limit: int | None) -> dict:
         "list_stale_qs": stale_returned_qs,
         "list_stale_same_attr": stale_same_attr_returned,
         "list_stale_returned": stale_returned,
+        "rar_acted_q": rar_acted_q,
+        "non_conflict_viol_q": ncviol_q,
+        "q_total": q_total,
+        "rar_activation_rate": round(rar_acted_q / q_total, 3) if q_total else None,
+        "intent": dict(intent_cross),
         "rows": per_q_rows,
     }
 
@@ -212,6 +279,36 @@ def main() -> None:
     for name in CONFIGS:
         md.append(fmt_row(name, out[name], buckets))
     md += ["", "列口径：分桶 question-level hit@1=全证据最差 rank==1；list-stale=当前列表题返回旧版本语句数/题数。", ""]
+    md += ["| 配置 | rar_acted_q | non_conflict_order_change_viol |", "|---|---|---|"]
+    for name in CONFIGS:
+        r_ = out[name]
+        md.append(f"| {name} | {r_['rar_acted_q']} | {r_['non_conflict_viol_q']} |")
+    md += ["", "不变量：稳定候选（两跑都在且不在任何冲突分量）的相对顺序必须不变；viol>0 = 实现层 side effect。", ""]
+
+    # ---- 意图门指标（RAR-002 预注册）----
+    CUR_CLS = ("CURRENT", "LIST_CURRENT")
+
+    def _cur_metrics(ic: Counter) -> tuple:
+        gold_cur = sum(v for (g, p), v in ic.items() if g in CUR_CLS)
+        pred_cur = sum(v for (g, p), v in ic.items() if p in CUR_CLS)
+        tp = sum(v for (g, p), v in ic.items() if g in CUR_CLS and p in CUR_CLS)
+        p = round(tp / pred_cur, 3) if pred_cur else None
+        r = round(tp / gold_cur, 3) if gold_cur else None
+        return p, r
+
+    def _cls_prec(ic: Counter, cls: str):
+        tp = ic[(cls, cls)]
+        pred = sum(v for (g, p), v in ic.items() if p == cls)
+        return round(tp / pred, 3) if pred else None
+
+    md += ["", "## 意图门指标（金标 vs 分类器）", "",
+           "| 配置 | current-P | current-R | hist-P | seq-P | rar-activation |",
+           "|---|---|---|---|---|---|"]
+    for name in ("G1", "G2", "G3"):
+        ic = Counter(out[name]["intent"])
+        cp, cr = _cur_metrics(ic)
+        md.append(f"| {name} | {cp} | {cr} | {_cls_prec(ic, 'HISTORICAL')} "
+                  f"| {_cls_prec(ic, 'SEQUENCE')} | {out[name]['rar_activation_rate']} |")
     # 晋级门对照（C4 vs C0，六条）
     c0, c4 = out["C0"], out["C4"]
     gates = [
@@ -231,9 +328,31 @@ def main() -> None:
     md += ["## 晋级门（C4 vs C0，预注册）", "", "| # | 条件 | 判定 | 实测 |", "|---|---|---|---|"]
     for n, ok, ev in gates:
         md.append(f"| {n} | | {'PASS' if ok else 'FAIL'} | {ev} |")
+
+    # ---- RAR-002 晋级门（预注册目标线，用户 2026-09-06 冻结）----
+    md += ["", "## RAR-002 晋级门（vs 预注册目标：T1≥25 T2≥15 T3≥6 T4≥10 T5≥3 T6=10 "
+           "list-stale≤3 false_conflict=0 viol=0 total≥68）", "",
+           "| 配置 | total | T1 | T2 | T3 | T4 | T5 | T6 | list-stale | viol | 判定 |",
+           "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for name in ("G1", "G2", "G3"):
+        rr = out[name]
+        t = sum(rr["bucket_hit1"].values())
+        ok = (rr["bucket_hit1"].get("T1", 0) >= 25 and rr["bucket_hit1"].get("T2", 0) >= 15
+              and rr["bucket_hit1"].get("T3", 0) >= 6 and rr["bucket_hit1"].get("T4", 0) >= 10
+              and rr["bucket_hit1"].get("T5", 0) >= 3 and rr["bucket_hit1"].get("T6", 0) == 10
+              and rr["list_stale_returned"] <= 3 and rr["non_conflict_viol_q"] == 0
+              and rr["false_conflict_rate"] == 0 and t >= 68)
+        md.append(f"| {name} | {t} | {rr['bucket_hit1'].get('T1',0)} | {rr['bucket_hit1'].get('T2',0)} "
+                  f"| {rr['bucket_hit1'].get('T3',0)} | {rr['bucket_hit1'].get('T4',0)} "
+                  f"| {rr['bucket_hit1'].get('T5',0)} | {rr['bucket_hit1'].get('T6',0)} "
+                  f"| {rr['list_stale_returned']} | {rr['non_conflict_viol_q']} "
+                  f"| {'PASS' if ok else 'FAIL'} |")
     ts = time.strftime("%Y%m%d-%H%M%S")
     out_dir = ROOT / "cortexa-out"
     out_dir.mkdir(parents=True, exist_ok=True)
+    for _name in CONFIGS:  # Counter tuple 键 → JSON 字符串键
+        out[_name]["intent"] = {f"{g}|{p}": v
+                                for (g, p), v in out[_name]["intent"].items()}
     json.dump(out, (out_dir / f"temporal_conflict_eval_v1_{ts}.json").open("w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
     md_text = "\n".join(md)
