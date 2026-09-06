@@ -24,11 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 os_env_note = None  # placeholder
 
+from novel_checkup import CHECK_PROBES  # noqa: E402
+
 from cortexa.config import Settings  # noqa: E402
 from cortexa.llm import LLMClient  # noqa: E402
 from cortexa.modules.search import search_memory  # noqa: E402
 from cortexa.storage import SQLiteMemoryStore  # noqa: E402
-from novel_checkup import CHECK_PROBES  # noqa: E402
 
 RE = __import__("re")
 
