@@ -189,13 +189,39 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
 
     # 生存状态判定
+    REF_MARK = re.compile(
+        r"说|道|听说|提起|回忆|记得|仿佛|遗物|账|死了|没了|消息|名字|提及|传闻|联想|"
+        r"暗线|源头|线索|檀香|密会|那夜|那晚|当年|那时|死因|忌日"
+    )
+
+    def _mention_kind(text: str) -> str:
+        """单行粗判：含引用/回忆/组织余势关键词 → 引用；否则疑似在场（粗判，供人工复核）。"""
+        return "ref" if REF_MARK.search(text) else "live"
+
+
     status = {}
     for p in persons:
         if death_events.get(p):
             death_chs = sorted(set(c for c, _ in death_events[p]))
             later = sorted(c for c in person_chapters[p] if c > max(death_chs))
             if later:
-                status[p] = f"⚠️死亡章{death_chs}后仍出现{len(later)}章(需核查)"
+                ref_n = 0
+                for c in later:
+                    for f in sorted((args.root / "废灵根").glob(f"Ch{c}_*.md")):
+                        for ln in f.read_text(encoding="utf-8").splitlines():
+                            if p in ln and _mention_kind(ln) == "ref":
+                                ref_n += 1
+                                break
+                        break  # 每章只判首条命中行（够粗判）
+                live_n = len(later) - ref_n
+                # 允许 ≤1 章或 ≤20% 存疑（长弧线粗判的合理容差）
+                if ref_n >= 1 and live_n <= max(1, round(0.2 * len(later))):
+                    # 2026-09-06 收紧：名字出现≠在场（引用/回忆/遗物/账目/组织余势降级；
+                    # 允许 ≤1 章存疑留人工）
+                    status[p] = (f"已死亡(章{death_chs})；后续{len(later)}章{ref_n}章为引用/回忆提及"
+                                 f"（{live_n}章待人工复核）")
+                else:
+                    status[p] = f"⚠️死亡章{death_chs}后仍出现{len(later)}章(需核查,引用类{ref_n}/在场{live_n})"
             else:
                 status[p] = f"已死亡(章{death_chs})"
         else:
