@@ -14,7 +14,7 @@
 | 30 天 TTL 数据删除（eval 启动清扫 + DELETE 兜底） | storage.record_scope/sweep_expired_eval_scopes/scope_meta 表；server lifespan | journal_mode=eval 时生效 | ✅ 已实现（2026-09-06） | P0-3 | test_official_contract.py::test_ttl_sweep_only_eval_expired |
 | 端点并发安全（同步 def 入线程池） | server.py 全部端点 | — | ✅ 已实现（2026-09-06，原 async 包阻塞体修复） | P0-2 | 契约测试全绿；无 async def |
 | 参赛环境一键固化 + 启动自检 WARN | Dockerfile ENV；server lifespan logger.warning | CORTEXA_SCENE/JOURNAL_MODE/NOVEL_ADAPTER_ENABLED | ✅ 已实现（2026-09-06） | P0-1 | local_eval 以 scene=aml+journal=eval 复跑绿 |
-| 双通道召回 + 语义软通道（G1，默认关） | search.py；storage.fts_search/vector_search/vectors_sem sem_search | semantic_channel=False（默认）；provider=openai 且索引存在时启用，hash 通道并行；语义模式内 FTS 候选宽 80 | ✅ 已实现；2026-09-06 小改验证：语义模式 11/11（弱题灵根/甲字/主线全中），hash 默认路径 9/11 零改动；启用需 network embed（~0.6s/查询） | W2/G1 | test_semantic_channel.py + research pilot §六（计分形态结论）+ 实库 AB |
+| 双通道召回 + 语义软通道（G1，默认关） | search.py；storage.fts_search/vector_search/vectors_sem sem_search | semantic_channel=False（默认）；provider=openai 且索引存在时启用，hash 通道并行；语义模式内 FTS 候选宽 80 | ✅ 已实现；2026-09-06 小改验证：语义模式 11/11（弱题灵根/甲字/主线全中），hash 默认路径 9/11 零改动；启用需 network embed（~0.6s/查询）；方式 A 已落地：Cortexa(semantic_channel=)/novel_loop context --semantic、.env 三件套说明、R2 正式库语义索引 2620 条已建（2026-09-06，备份 pre_semindex） | W2/G1 | test_semantic_channel.py + research pilot §六（计分形态结论）+ 实库 AB |
 | precision-first 截断 + 缺席闸 | search.py（空 scope O(1) 返空） | — | ✅ 已实现 | W2 | test_search_returns_empty_array |
 | RULE 专属 Wing（永不衰减 + rule_boost） | models.MemoryType.RULE + no_decay；search._retention_factor | rule_boost=1.25；rule_llm_fallback=True | ✅ 已实现 | W2/维度F | test_smoke::test_rule_memory_cannot_be_forgotten |
 | 维度地板审计（压缩前结构不丢） | modules/dimension_floor.py（enforce/assert_floor） | — | ✅ 已实现 | W2 | test_basic |

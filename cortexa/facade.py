@@ -72,6 +72,7 @@ class Cortexa:
         openai_api_key: str | None = None,
         openai_base_url: str | None = None,
         embedding_dim: int | None = None,
+        semantic_channel: bool | None = None,
     ) -> None:
         """data_dir 缺省 ~/.cortexa（类库不污染调用方工作目录）。
 
@@ -101,6 +102,8 @@ class Cortexa:
             overrides["embedding_provider"] = "openai"
         if embedding_dim is not None:
             overrides["embedding_dim"] = embedding_dim
+        if semantic_channel is not None:
+            overrides["semantic_channel"] = semantic_channel
         if openai_api_key is not None:
             overrides["openai_api_key"] = openai_api_key
         if openai_base_url is not None:

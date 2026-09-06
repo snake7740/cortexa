@@ -49,6 +49,13 @@ def main() -> int:
         "SELECT id, content FROM memories WHERE scope=? AND status='ACTIVE' ORDER BY created_ts_ms", (scope,)
     ).fetchall()
     con.close()
+    if a.apply:
+        # 2026-09-06：正式库建索引前先备份
+        import shutil as _sh
+        from datetime import datetime as _dt
+        bdir = db.parent / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        _sh.copy2(db, bdir / ("cortexa_db_pre_semindex_" + _dt.now().strftime("%Y%m%d-%H%M%S") + ".db"))
     store = SQLiteMemoryStore(db_path=str(db), embedding_dim=s.embedding_dim)
     existing = {
         r[0] for r in store.connection.execute("SELECT mem_id FROM vectors_sem WHERE scope=?", (scope,))

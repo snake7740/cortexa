@@ -68,7 +68,7 @@ def _arc_keywords(row: str | None) -> str:
     return re.sub(r"[*`（(].*?[-—]", "", cells[3])[:16].replace(" ", "")
 
 
-def cmd_context(root: Path, ch: int) -> int:
+def cmd_context(root: Path, ch: int, semantic: bool = False) -> int:
     scope = root.name
     lines = [f"# 第{ch}章 写前上下文包（{datetime.now():%Y-%m-%d %H:%M}）", ""]
 
@@ -83,11 +83,13 @@ def cmd_context(root: Path, ch: int) -> int:
         tail = prev_matches[0].read_text(encoding="utf-8").strip()[-600:]
         lines += ["## 2) 上一章结尾（衔接用，最后 600 字）", "", "…", tail, ""]
 
-    # 写前 recall（记忆库三查询）
+    # 写前 recall（记忆库三查询；--semantic 开启语义通道 = 候选更全/弱题可修，需 openai 端点）
     from cortexa import Cortexa
 
-    lines += ["## 3) 记忆库写前核对（recall）", ""]
-    with Cortexa(data_dir=root / ".cortexa") as cm:
+    lines += ["## 3) 记忆库写前核对（recall" + (" · 语义通道" if semantic else "") + "）", ""]
+    _prov = "openai" if semantic else None
+    with Cortexa(data_dir=root / ".cortexa", embedding_provider=_prov,
+                 semantic_channel=semantic) as cm:
         kw = _arc_keywords(row)
         queries = [f"第{ch - 1}章"] + ([kw] if kw else [])
         for q in queries:
@@ -203,6 +205,8 @@ def main() -> int:
     ap.add_argument("command", choices=["context", "place", "check"])
     ap.add_argument("chapter", nargs="?", type=int, default=None)
     ap.add_argument("src", nargs="?", default=None, help="place 模式：中转章节 md 路径")
+    ap.add_argument("--semantic", action="store_true",
+                    help="写前 recall 开语义通道（需 openai 端点+语义索引；真实写前用）")
     ap.add_argument("--sync-state", action="store_true",
                     help="place 落位后把 .webnovel/state.json 进度字段追平（B 方案渐进接管）")
     a = ap.parse_args()
@@ -214,7 +218,7 @@ def main() -> int:
         if a.chapter is None:
             print("context 需要 <章号>")
             return 1
-        return cmd_context(root, a.chapter)
+        return cmd_context(root, a.chapter, semantic=a.semantic)
     if a.command == "place":
         if a.chapter is None or a.src is None:
             print("place 需要 <章号> <中转md>")
