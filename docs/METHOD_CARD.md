@@ -2,7 +2,7 @@
 
 > 提交材料之一。对应官方要求：公开仓库 + 固定 commit + 方法说明 + 思想来源披露。
 > 本卡只写**评测版本实际生效**的东西；默认关闭的机制一律不写进"方法"，只在 §6 列为"未启用"。
-> commit / 端点两行在推仓与部署后由提交人填写。
+> 仓库与代码 commit 已填（已推公开仓）；**公网端点一行待部署后由提交人填写**。
 
 ## 1. 基本信息
 
@@ -10,8 +10,8 @@
 |---|---|
 | 系统名 | Cortexa — 仿生 AI 记忆系统 |
 | 版本 | 0.1.0（`cortexa/__init__.py`） |
-| 公开仓库 | `<填写：https://github.com/<org>/<repo>>` |
-| 评测 commit | `<填写：git rev-parse HEAD，受理后冻结>` |
+| 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
+| 评测 commit | `938332e7c9389b7c6923a29e54271352e930ac81`（代码状态；受理后冻结，本卡填写产生的文档 commit 仅改本文件） |
 | 公网端点 | `<填写：https://…>`（Add `/add`、Search `/search`、Health `/health`） |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
