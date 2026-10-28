@@ -24,4 +24,9 @@ VOLUME ["/app/data"]
 
 EXPOSE 8000
 
+# 容器级存活探针：对齐官方 Health（无鉴权 GET，任意 2xx）；云平台/compose 可直接复用。
+# 用标准库而非 curl：slim 镜像不自带 curl，避免为探针多装一层。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4); sys.exit(0 if 200 <= r.status < 300 else 1)"]
+
 CMD ["uvicorn", "cortexa.server:app", "--host", "0.0.0.0", "--port", "8000"]

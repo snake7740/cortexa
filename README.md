@@ -104,9 +104,18 @@ Add/Search 管线，反馈不失真。
 
 ### 参赛部署（一键合规）
 
-Docker 已固化参赛环境（`CORTEXA_SCENE=aml` + `CORTEXA_JOURNAL_MODE=eval` + `CORTEXA_NOVEL_ADAPTER_ENABLED=false`），docker build && docker run 即合规；
-本地起服参赛时请设同一组变量（见 .env.example「参赛必设三键」）。服务启动会自检：journal≠eval 或 scene≠aml 时打醒目 WARN（不静默）；
-/health 暴露 `scene/journal_mode/api_key_required` 供自证。30 天数据删除双保险：eval 部署启动自动清扫超 30 天 scope（TTL）+ `DELETE /scope/{scope}` 人工兜底。
+Docker 已固化参赛环境（`CORTEXA_SCENE=aml` + `CORTEXA_JOURNAL_MODE=eval` + `CORTEXA_NOVEL_ADAPTER_ENABLED=false` + `CORTEXA_ASYNC_ENHANCE_ENABLED=false`），docker build && docker run 即合规，并自带 HEALTHCHECK；
+本地起服参赛时请设同一组变量（见 .env.example「参赛必设四键」）。服务启动会自检：journal≠eval 或 scene≠aml 时打醒目 WARN（不静默）；
+/health 暴露 `scene/journal_mode/api_key_required` 供自证。鉴权按官方四方案全收：空 key=无鉴权；设 `CORTEXA_API_KEY` 后 `Authorization: Token <k>` / `Authorization: Bearer <k>` / `X-Api-Key: <k>` 三头任一。
+30 天数据删除双保险：eval 部署启动自动清扫超 30 天 scope（TTL）+ `DELETE /scope/{scope}` 人工兜底。
+
+**部署后、点官网 Smoke 前先自测**（标准库，零依赖，对任何 URL）：
+
+```bash
+python scripts/smoke_local.py https://<你的公网域名> --key <Memory System Key>   # SMOKE OK 再去官网申请
+```
+
+跑 Health→Add→Search→鉴权负例→清理，逐项校验三 ID 回显 / data≤top_k / id&content 非空 / 同步写入可见，避免用官方 smoke 配额（每小时 1 次）调低级错误。方法披露见 `docs/METHOD_CARD.md`；规则核对单见 `docs/competition-rule-freeze-v1.md`。
 
 ## 开发
 
@@ -124,10 +133,11 @@ pytest
 | 双闭环实战（额外） | — | 小说 127 章/1737 条记忆可复盘不混乱；Palantir 纪律移植（retcon/links/编辑史） | ✅ 8/31，154 测试绿 |
 | W3 评测模拟器 | 9/12-9/19 | 公开数据集本地近似分 + Docker 部署预演 | ✅ 8/31 提前完成（`examples/local_eval.py` 消融裁判 + 容器内 Add→Search 全链路冒烟 + Dreaming 设计稿；审计后实体通道默认关、编号精确通道落地并小说实证 0/4→4/4） |
 | 复盘 #4 审计器自修（额外） | — | Ch1-176 全量复盘暴露的三类系统性偏差：等级表补巅峰/圆满变体、模糊修饰降级+异常检测收窄 high 点、物品缺口支持"正名｜别名"代称在场 | ✅ 9/1，160 测试绿 |
-| 报名周 | 9/20-9/26 | 提交申请、官方 Smoke 通过（契约 golden 已固化，正式 Top K=100） | — |
-| 第 1 次 Full | 9/27-10/10 | 尽早评测、拿七维诊断 | — |
-| 定向优化 | 10/11-10/24 | 按诊断短板排序开发机制 | — |
-| 第 2 次 Full | 10/25-10/29 | 版本冻结、冲刺 | — |
+| 报名周（原计划） | 9/20-9/26 | 提交申请、官方 Smoke 通过 | ✗ 未执行（9/07–10/27 项目停摆） |
+| 第 1 次 Full（原计划） | 9/27-10/10 | 尽早评测、拿七维诊断 | ✗ 未执行 |
+| 定向优化 / 第 2 次 Full（原计划） | 10/11-10/29 | — | ✗ 官方规则每 Key 每赛道 Full ≤2 次且间隔 30 天，本期实际仅 1 次 |
+| **第二期冲线（现行）** | **10/28-10/31 23:59** | 契约补齐（Token 鉴权 / v4 维度 / settings 覆盖）→ 公网自托管 → 公开仓库固定 commit → 官网 Smoke → 交材料 | ◔ 10/28 契约补齐 + 自测脚本 + METHOD_CARD 就位；公网部署/推仓/申请待人工 |
+| 唯一一次 Full | ≤ 11/04 23:59 前受理完成 | 版本冻结，受理后不可换版 | — |
 
 > 机制/开关/状态单一事实源见 `docs/mechanism-status.md`（含 2026-09-06 批① P0 处置）；契约 golden 见 `tests/golden/official_aml_contract.json`。
 

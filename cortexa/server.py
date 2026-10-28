@@ -39,8 +39,13 @@ from .storage import SQLiteMemoryStore
 logger = logging.getLogger("cortexa.server")
 
 # ---------------------------------------------------------------------------
-# 认证依赖（官方 Authentication：No authentication / Memory API Key）
+# 认证依赖（官方 Authentication：none / Token / Bearer / X-Api-Key 四方案）
+# 第二期 api-guide：Memory System Key 可按 `Authorization: Token <key>`、
+# `Authorization: Bearer <key>` 或 `X-Api-Key: <key>` 三种头传入，须全部接受。
 # ---------------------------------------------------------------------------
+
+_AUTH_SCHEMES = ("bearer ", "token ")
+
 
 def require_key(
     settings: Annotated[Settings, Depends(get_settings)],
@@ -50,8 +55,12 @@ def require_key(
     if not settings.api_key:
         return
     presented = x_api_key
-    if presented is None and authorization and authorization.lower().startswith("bearer "):
-        presented = authorization[7:].strip()
+    if presented is None and authorization:
+        lowered = authorization.lower()
+        for scheme in _AUTH_SCHEMES:
+            if lowered.startswith(scheme):
+                presented = authorization[len(scheme):].strip()
+                break
     if presented != settings.api_key:
         raise HTTPException(status_code=401, detail="invalid or missing API key")
 
@@ -105,6 +114,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="Bionic AI memory system — AML Add/Search protocol",
         lifespan=lifespan,
     )
+    # 鉴权依赖必须读本 app 那份 settings（而非全局环境）：否则 create_app(settings)
+    # 显式传 api_key 时 /health 报 api_key_required=True 而 /add /search 却不校验。
+    app.dependency_overrides[get_settings] = lambda: settings
 
     # 延迟观测与红线自证（业务文档 12.3 / config 红线：Search P95 与 Add 预算
     # 不能只声明不执法——/health 公开比对结果，超限即可见）

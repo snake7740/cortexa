@@ -19,6 +19,16 @@ from ..config import Settings
 from .profiles import build_chat_kwargs, extract_content, resolve_profile
 from .resilience import ResilienceRunner, ResilienceStats
 
+# 支持 `dimensions=` 参数（Matryoshka 截断）的嵌入模型前缀：
+# - OpenAI text-embedding-3-small/large
+# - 阿里云百炼 text-embedding-v3 / v4（compatible-mode 端点；AML 开源榜指定 v4）
+# 不在列的模型不传该参数，由调用方自行保证 CORTEXA_EMBEDDING_DIM 与模型原生维度一致。
+_DIMENSIONS_CAPABLE_PREFIXES = ("text-embedding-3", "text-embedding-v")
+
+
+def _supports_dimensions(model: str) -> bool:
+    return model.startswith(_DIMENSIONS_CAPABLE_PREFIXES)
+
 
 class TokenUsage:
     """进程内累计 token 用量（线程安全）。"""
@@ -199,9 +209,10 @@ class LLMClient:
         """批量向量化。hash 提供者零成本同步；openai 提供者失败时降级 hash。
 
         维度一致性红线：存储层按 settings.embedding_dim 建矩阵，openai 调用必须
-        显式传 dimensions= 把原生 1536 维降到目标维（text-embedding-3 系列支持
-        Matryoshka 截断），否则重启后 _ensure_vec_cache 按维度过滤会把全部向量
-        静默丢弃——语义通道瘫痪且无报错。
+        显式传 dimensions= 把原生维度降到目标维（OpenAI text-embedding-3 系列 1536/3072
+        与阿里 text-embedding-v3/v4 系列 1024 均支持 Matryoshka 截断），否则重启后
+        _ensure_vec_cache 按维度过滤会把全部向量静默丢弃——语义通道瘫痪且无报错。
+        AML 开源方法榜硬规 Embedding 须 text-embedding-v4，故 v3/v4 系列必须覆盖。
         """
         if self.settings.embedding_provider == "minilm":
             return self._embed_minilm(texts)
@@ -211,7 +222,7 @@ class LLMClient:
                 if client is None:
                     raise RuntimeError("openai client not initialized")
                 kwargs: dict = {"model": self.settings.embedding_model, "input": texts}
-                if self.settings.embedding_model.startswith("text-embedding-3"):
+                if _supports_dimensions(self.settings.embedding_model):
                     kwargs["dimensions"] = self.settings.embedding_dim
                 return client.embeddings.create(**kwargs)
 
