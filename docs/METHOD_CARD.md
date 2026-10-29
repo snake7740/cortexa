@@ -2,7 +2,7 @@
 
 > 提交材料之一。对应官方要求：公开仓库 + 固定 commit + 方法说明 + 思想来源披露。
 > 本卡只写**评测版本实际生效**的东西；默认关闭的机制一律不写进"方法"，只在 §6 列为"未启用"。
-> 仓库与代码 commit 已填（已推公开仓）；**公网端点一行待部署后由提交人填写**。
+> 仓库与代码 commit 已填（已推公开仓）；公网端点已部署并通过契约自测。
 
 ## 1. 基本信息
 
@@ -12,7 +12,7 @@
 | 版本 | 0.1.0（`cortexa/__init__.py`） |
 | 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
 | 评测 commit | `080dbc06a58d1056deb4d1c7f8e46b883ac29cfc`（**代码冻结点**，公网端点镜像即由它构建；受理后不变）。其后的提交仅修订 README 与本卡的表述，**不改任何代码、配置、测试与镜像内容**——可执行 `git diff 080dbc0 HEAD -- cortexa tests scripts examples Dockerfile requirements.txt pyproject.toml .env.example` 复核，结果应为空（本卡提交时实测为空）。 |
-| 公网端点 | `<填写：https://…>`（Add `/add`、Search `/search`、Health `/health`） |
+| 公网端点 | `http://47.79.226.71:8000`（Add `/add`、Search `/search`、Health `/health`）；同容器另绑标准端口 `http://47.79.226.71`（80）作为后路，两端点同一实例同一数据卷。由评测 commit 构建的镜像单容器常驻，容器 `--restart unless-stopped`。契约自测（`scripts/smoke_local.py` 对该公网地址）全部通过：Add 200 / Search 命中 / 无 key 与错 key 均 401。 |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
 | License | MIT |
