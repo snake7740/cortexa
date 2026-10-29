@@ -129,7 +129,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         embedding_dim=settings.embedding_dim,
     )
     llm = LLMClient(settings)
-    journal = TaskJournal(store.connection, mode=settings.journal_mode)
+    journal = TaskJournal(store.connection, mode=settings.journal_mode,
+                          lock=store.lock)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

@@ -9,7 +9,9 @@ precision-first 依据：官方 pipeline.py 对列表题多答判 WRONG——宁
 vector_min_cos 在存储层已剪枝语义通道；本层只做融合与截断，不引入新的召回源。
 A 层护栏（2026-10-30）：请求内 deadline（config.search_deadline_ms）到点后只跳
 「召回加料步」不动召回源；返回预算（config.search_return_token_budget）同官方
-Q18「低优先级先剪」从尾部自剪。两项默认值在正常负载永不触发，降级次数进观察面。
+Q18「低优先级先剪」从尾部自剪。两项阈值均远高于实测负载（deadline 5000ms vs
+6000 条语料实测 max ≈111ms；预算 60000 token vs 实测返回量），正常检索零行为
+变化，降级次数进观察面。
 W3 接线：检索命中即强化（测试效应）——最终返回的记忆 FSRS 巩固 +1；
 检索事件写入 TaskJournal（模式由 Settings.journal_mode 决定）。
 """
@@ -130,9 +132,9 @@ def search_memory(
     """
     started = time.perf_counter()
     k = max(1, min(top_k, settings.max_top_k))
-    # A-2 请求内 deadline（联动 config.search_p95_ms 红线）：到点后只跳「召回加料步」
-    # （options 副通道 / 邻接扩展），不动召回源，用已算好的头部强证据返 200——把
-    # 「拖到连接层失败/超时」换成可控降级。正常负载（实测 ≈10-16ms）永不触发。
+    # A-2 请求内 deadline（阈值对齐官方 30 分钟单请求时限，不是我方 search_p95_ms
+    # 内部红线）：到点后只跳「召回加料步」（options 副通道 / 邻接扩展），不动召回
+    # 源，用已算好的头部强证据返 200——把「拖到连接层失败/超时」换成可控卡死兜底。
     # deadline_at 供调用方/测试显式注入绝对时刻（perf_counter 基准）；None 时由
     # settings.search_deadline_ms 推导（<=0 关闭）。
     if deadline_at is None and settings.search_deadline_ms > 0:

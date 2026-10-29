@@ -158,7 +158,7 @@ def test_deadline_hit_skips_expansion_but_still_returns_results(tmp_path: Path) 
 
 
 def test_deadline_disabled_by_default_setting_is_neutral(tmp_path: Path) -> None:
-    """默认 200ms 预算下（本地实测 ≈毫秒级）行为与关闭时逐字节一致。"""
+    """默认阈值（5000ms deadline / 60000 token 预算）下行为与完全关闭时逐一致。"""
     store = _store(tmp_path)
     off = _recall(store, _settings(tmp_path, adjacency_enabled=True,
                                    search_deadline_ms=0,

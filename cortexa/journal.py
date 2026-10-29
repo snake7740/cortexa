@@ -12,8 +12,10 @@
 - app  ：全量记录（默认，真实使用）
 - eval ：记录元数据，内容字段脱敏（参赛评测模式）
 
-存储：复用 MemoryStore 的 SQLite 连接（journal 表在 _SCHEMA 中），单连接单锁，
-与记忆写入同事务上下文。
+存储：复用 MemoryStore 的 SQLite 连接（journal 表在 _SCHEMA 中），与记忆写入同事务
+上下文。锁必须与 MemoryStore 同源（构造时传 store.lock）——同一个 sqlite3 连接被
+两把互不相干的 RLock 保护等于无保护，并发下会抛 "cannot commit - no transaction
+is active"。
 """
 
 from __future__ import annotations
@@ -45,12 +47,20 @@ class JournalEntry:
 class TaskJournal:
     """写入/检索事件的流水账。mode 决定记录深度（off/app/eval）。"""
 
-    def __init__(self, conn: sqlite3.Connection, mode: str = "app") -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        mode: str = "app",
+        lock: threading.RLock | None = None,
+    ) -> None:
         if mode not in MODES:
             raise ValueError(f"journal_mode must be one of {MODES}, got {mode!r}")
         self._conn = conn
         self.mode = mode
-        self._lock = threading.RLock()
+        # conn 通常就是 SQLiteMemoryStore 的那个连接：锁必须同源（传 store.lock），
+        # 否则本类与 store 各持一把 RLock 保护同一个非线程安全对象，并发写会损坏
+        # 事务状态。不传则退化为独立锁——仅在单线程或不共享连接时安全。
+        self._lock = lock if lock is not None else threading.RLock()
 
     # -- 写入 ---------------------------------------------------------------
 

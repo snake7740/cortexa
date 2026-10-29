@@ -169,7 +169,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
                                   embedding_dim=settings.embedding_dim)
         llm = LLMClient(settings)
-        journal = TaskJournal(store.connection, mode="off")
+        journal = TaskJournal(store.connection, mode="off", lock=store.lock)
         try:
             for conv in convs:
                 scope = str(conv.get("conversation_id") or conv.get("scope_override") or "conv")

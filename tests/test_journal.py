@@ -1,20 +1,26 @@
-"""任务流水（TaskJournal）测试：事件留痕 / 模式脱敏 / FSRS 检索强化 / 孤岛统计。
+"""任务流水（TaskJournal）测试：事件留痕 / 模式脱敏 / FSRS 检索强化 / 孤岛统计 / 锁同源。
 
 业务锚点：
 - 官方红线"评测数据不留日志" -> eval 模式内容脱敏必须有测试锁死；
 - 测试效应（Science 2008）-> 检索命中即强化（fsrs 更新）必须有测试锁死；
 - Obsidian 孤岛节点启发 -> orphan_ratio 统计口径与 count() 同源（status='ACTIVE'）。
+- 连接与锁同源 -> 同一个 sqlite3 连接被两把互不相干的 RLock 保护等于无保护（并发 500
+  根因，见 TestSharedConnectionLock）。
 """
 
 from __future__ import annotations
 
+import concurrent.futures as cf
 from pathlib import Path
 
 import pytest
 
+import cortexa.server as server_module
 from cortexa import Cortexa
 from cortexa.config import Settings
 from cortexa.journal import TaskJournal
+from cortexa.models import MemoryInstance, content_hash
+from cortexa.server import create_app
 from cortexa.storage import SQLiteMemoryStore
 
 
@@ -82,7 +88,8 @@ class TestJournalModes:
             embedding_dim=settings.embedding_dim,
         )
         try:
-            journal = TaskJournal(store.connection, mode=settings.journal_mode)
+            journal = TaskJournal(store.connection, mode=settings.journal_mode,
+                                  lock=store.lock)
             journal.record(
                 "search",
                 scope="s",
@@ -104,7 +111,7 @@ class TestJournalModes:
             embedding_dim=settings.embedding_dim,
         )
         try:
-            journal = TaskJournal(store.connection, mode="off")
+            journal = TaskJournal(store.connection, mode="off", lock=store.lock)
             journal.record("add", scope="s", stored=1)
             assert journal.tail(10) == []
             assert journal.summary(scope="s")["by_event_type"] == {}
@@ -163,3 +170,78 @@ class TestOrphanStats:
         stats = cm.journal.orphan_stats("empty")
         assert stats["active_memories"] == 0
         assert stats["orphan_ratio"] == 0.0
+
+
+class TestSharedConnectionLock:
+    """连接与锁同源（2026-10-30 并发 500 根因执法）。
+
+    实证链：公网端点 c=16 灌库出现 500 "Internal Server Error"（c=1/4/8 各 48 请求
+    全 200）；本机 16 线程 × 400 次 store.add + journal.record 混合作业复现 42 次
+    sqlite3 异常——cannot commit - no transaction is active ×32、SystemError: error
+    return without exception set ×6、not an error ×4，栈顶均为 journal 的
+    _conn.commit()。根因：TaskJournal 复用 store 的 sqlite3.Connection，却自带一把
+    独立 RLock——两把互不相干的锁保护同一个非线程安全对象等于无保护。本类把
+    「装配锁同源」与「并发零异常」同时钉死。
+    """
+
+    def test_injected_lock_is_the_store_lock(self, tmp_path: Path) -> None:
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "c.db"), embedding_dim=512)
+        try:
+            shared = TaskJournal(store.connection, mode="eval", lock=store.lock)
+            assert shared._lock is store.lock
+            # 不传则退化为独立锁（仅在另起连接时安全）——两种装配必须可区分
+            solo = TaskJournal(store.connection, mode="eval")
+            assert solo._lock is not store.lock
+        finally:
+            store.close()
+
+    def test_facade_wires_lock(self, cm: Cortexa) -> None:
+        assert cm.journal._lock is cm._store.lock
+
+    def test_server_wires_lock(self, tmp_path: Path,
+                               monkeypatch: pytest.MonkeyPatch) -> None:
+        """参赛 HTTP 端点走的是 create_app 这条路，装配必须同样同源。"""
+        seen: dict[str, object] = {}
+        real_journal = server_module.TaskJournal
+        real_store = server_module.SQLiteMemoryStore
+
+        def spy_journal(conn, mode="app", lock=None):  # noqa: ANN001
+            seen["lock"] = lock
+            return real_journal(conn, mode=mode, lock=lock)
+
+        def spy_store(*args, **kwargs):
+            inst = real_store(*args, **kwargs)
+            seen["store"] = inst
+            return inst
+
+        monkeypatch.setattr(server_module, "TaskJournal", spy_journal)
+        monkeypatch.setattr(server_module, "SQLiteMemoryStore", spy_store)
+        create_app(Settings(data_dir=tmp_path / "srv", embedding_provider="hash",
+                            api_key="k", journal_mode="eval", _env_file=None))
+        assert seen["lock"] is seen["store"].lock  # type: ignore[union-attr]
+
+    def test_concurrent_add_and_record_raises_nothing(self, tmp_path: Path) -> None:
+        """16 线程混合作业：store.add / journal.record / store.get 交错，零异常。"""
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "cc.db"), embedding_dim=512)
+        journal = TaskJournal(store.connection, mode="eval", lock=store.lock)
+        errors: list[str] = []
+
+        def work(i: int) -> None:
+            try:
+                text = f"catering budget for record {i} is {500 + i} euros"
+                mem = MemoryInstance(scope="u1", session_id=f"s{i % 5}", content=text,
+                                     content_hash=content_hash("u1", text))
+                store.add(mem)
+                journal.record("add", scope="u1", session_id=f"s{i % 5}",
+                               request_id=f"r{i}", content=text)
+                store.get(mem.id, "u1")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        try:
+            with cf.ThreadPoolExecutor(max_workers=16) as ex:
+                list(ex.map(work, range(300)))
+            assert not errors, f"并发混合作业出现 {len(errors)} 次异常：{errors[:3]}"
+            assert journal.summary("u1")["by_event_type"]["add"]["count"] == 300
+        finally:
+            store.close()

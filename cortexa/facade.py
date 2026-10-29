@@ -135,7 +135,8 @@ class Cortexa:
         )
         self._llm = LLMClient(self._settings)
         self._journal = TaskJournal(
-            self._store.connection, mode=self._settings.journal_mode
+            self._store.connection, mode=self._settings.journal_mode,
+            lock=self._store.lock,
         )
 
     # 任务流水：remember/recall 的过程留痕与孤岛统计（小说线索一致性、
