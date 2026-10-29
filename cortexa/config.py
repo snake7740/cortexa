@@ -148,6 +148,21 @@ class Settings(BaseSettings):
     # ---- 业务红线（业务文档 12.3）----
     add_budget_ms: int = 500  # 已接线：/health add_within_budget 自证
     search_p95_ms: int = 200  # 已接线：/health search_within_budget 自证
+    # ---- A 层运行时护栏（2026-10-30，官方 Q27 / Q18 / P95 红线）----
+    # 依据 /docs 06 事实：429 并非强制实现项，超限若表现为「排队后照常返 200」不进
+    # 任何错误码；主动 429 等于把零风险换成「依赖平台重试次数上限」。故形状定为
+    # 「排队为主、429 只当崩溃阀」：三条阈值均可环境变量覆盖，无需改代码。
+    admission_soft_limit: int = 64     # 在途 Add/Search 达此值开始排队（0=不限）
+    admission_hard_limit: int = 512    # 在途达此值才 429（须 > soft；实测能力远高于此）
+    admission_wait_ms: int = 2000      # 排队最长等待；等到即照常处理，不返错
+    # Search 请求内 deadline：到点后只跳「召回加料步」（options 副通道/邻接扩展），
+    # 不动召回源，用已算好的头部强证据返 200——把「拖到连接层失败」换成可控降级。
+    # 默认与 search_p95_ms 红线同值；实测 Search p95 ≈10-16ms 永不触发→零行为变化。
+    search_deadline_ms: int = 200      # <=0 关闭
+    # 返回预算（官方 Q18：返回内容超限会被截断，低优先级先剪）：同向自剪尾部，
+    # 保证头部强证据一定在内，且始终 ≥1 条、≤ top_k。默认 60000 token 估算，
+    # 相对实测返回量留 ≥2 倍余量→正常负载零行为变化；Smoke 回执若给出真实上限再收紧。
+    search_return_token_budget: int = 60000  # <=0 关闭
     # P2-4（2026-09-06）：evidence_token_cap/write_token_budget/consolidation_core_level/
     # forget_cosine_max/forget_llm_relevance_max 等未接线阈值已从 Settings 移除（无消费方，
     # 禁止只声明）；对应机制（证据截断/写入分块/核心记忆区/遗忘引擎）落地 P3/P4 时随消费

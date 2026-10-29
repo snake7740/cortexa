@@ -26,6 +26,8 @@ class EnhanceStats:
         "enhance_spawn",   # 增强线程启动失败
         "graph",           # 关系建边/实体图写入失败
         "floor_check",     # 查体地板复验行解析失败
+        "deadline_skip",   # A-2：Search 超 deadline 后跳过的加料步次数（降级可观测）
+        "return_trim",     # A-3：返回预算自剪尾部的次数（官方 Q18 同向）
     )
 
     def __init__(self) -> None:

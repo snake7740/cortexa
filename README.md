@@ -112,7 +112,11 @@ Docker 已固化参赛环境（`CORTEXA_SCENE=aml` + `CORTEXA_JOURNAL_MODE=eval`
 /health 暴露 `scene/journal_mode/api_key_required` 供自证。鉴权按官方四方案全收：空 key=无鉴权（**参赛不允许裸奔，必须设 key**）；设 `CORTEXA_API_KEY` 后 `Authorization: Token <k>` / `Authorization: Bearer <k>` / `X-Api-Key: <k>` 三头任一。
 30 天数据删除双保险：eval 部署启动自动清扫超 30 天 scope（TTL）+ `DELETE /scope/{scope}` 人工兜底。
 
-运行限制（如实，已写入提交说明）：单实例单进程，超出并发上限时请求排队而非丢弃；**未实现 429 + Retry-After 限流响应**，故向平台申报的并发上限按实测能力保守填写。
+运行限制（如实，已写入提交说明）：单实例单进程。契约面有在途准入阀：**超软上限（默认 64）先排队（最多
+2000ms）后照常返 200，只有在途 ≥ 硬上限（默认 512）才返 429 + Retry-After**；未鉴权请求不占配额。
+Search 另有请求内 deadline（默认 200ms）与返回预算（默认 60000 token 估算），两者在实测负载下不触发。
+阈值可用 `CORTEXA_ADMISSION_*` / `CORTEXA_SEARCH_DEADLINE_MS` / `CORTEXA_SEARCH_RETURN_TOKEN_BUDGET` 覆盖，
+app 档 `/health` 的 `admission` 计数可查。
 
 **部署后、点官网 Smoke 前先自测**（标准库，零依赖，对任何 URL）：
 

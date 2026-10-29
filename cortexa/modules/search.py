@@ -7,6 +7,9 @@ settings.chapter_channel 关闭）+ 实体特征访问（维度 B 前哨，默�
 precision-first 依据：官方 pipeline.py 对列表题多答判 WRONG——宁可少给不可硬凑。
 缺席闸（布隆哲学：把"不在"做成廉价确定答案）：空 scope 免嵌入/检索直接返回空。
 vector_min_cos 在存储层已剪枝语义通道；本层只做融合与截断，不引入新的召回源。
+A 层护栏（2026-10-30）：请求内 deadline（config.search_deadline_ms）到点后只跳
+「召回加料步」不动召回源；返回预算（config.search_return_token_budget）同官方
+Q18「低优先级先剪」从尾部自剪。两项默认值在正常负载永不触发，降级次数进观察面。
 W3 接线：检索命中即强化（测试效应）——最终返回的记忆 FSRS 巩固 +1；
 检索事件写入 TaskJournal（模式由 Settings.journal_mode 决定）。
 """
@@ -96,6 +99,17 @@ def extract_chapter_nos(query: str) -> list[int]:
     return [n for n in nos if not (n in seen or seen.add(n))]
 
 
+def estimate_tokens(text: str) -> int:
+    """粗估 token 数（A-3 预算用）：非 ASCII（CJK 为主）按 1 token/字，
+    ASCII 按 4 字符/token。
+
+    只做返回体预算护栏，不追求与官方 tokenizer 逐字一致——默认预算（60000）
+    相对实测返回量留 ≥2 倍余量，误差量级不影响触发判定。
+    """
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return non_ascii + (len(text) - non_ascii + 3) // 4
+
+
 def search_memory(
     store: MemoryStore,
     llm: LLMClient,
@@ -106,6 +120,7 @@ def search_memory(
     top_k: int,
     journal: TaskJournal | None = None,
     options: list[str] | None = None,
+    deadline_at: float | None = None,
 ) -> list[SearchResult]:
     """Search 契约的实现核心。返回官方四字段降序数组。
 
@@ -115,6 +130,16 @@ def search_memory(
     """
     started = time.perf_counter()
     k = max(1, min(top_k, settings.max_top_k))
+    # A-2 请求内 deadline（联动 config.search_p95_ms 红线）：到点后只跳「召回加料步」
+    # （options 副通道 / 邻接扩展），不动召回源，用已算好的头部强证据返 200——把
+    # 「拖到连接层失败/超时」换成可控降级。正常负载（实测 ≈10-16ms）永不触发。
+    # deadline_at 供调用方/测试显式注入绝对时刻（perf_counter 基准）；None 时由
+    # settings.search_deadline_ms 推导（<=0 关闭）。
+    if deadline_at is None and settings.search_deadline_ms > 0:
+        deadline_at = started + settings.search_deadline_ms / 1000.0
+
+    def _past_deadline() -> bool:
+        return deadline_at is not None and time.perf_counter() >= deadline_at
 
     # G1（2026-09-06，InvMem 查询构造）：选择题把 question+options 拼接为统一
     # 检索查询——选项里的实体/候选事实也参与召回；原文案/限流由官方 Answer 侧管。
@@ -221,12 +246,17 @@ def search_memory(
     # Q2a-D（默认关）：选项低权副通道——题干主查询之上，选项文本单独召回候选并
     # 以 options_channel_weight 降权进融合（防选项实体淹没题干；对照 G1 拼接）。
     if dual_options:
-        _opt_q = " ".join(options)
-        _merge(store.fts_search(_opt_q, scope, limit=k * 3), "opts",
-               settings.rrf_lexical_weight * settings.options_channel_weight)
-        if settings.entity_channel:
-            _merge(store.entity_search(_opt_q, scope, limit=k * 3), "opts",
-                   settings.options_channel_weight)
+        # deadline 到点时跳过（加料步，不影响主召回），降级计数进观察面。
+        if _past_deadline():
+            from ..enhance_stats import stats
+            stats.inc("deadline_skip")
+        else:
+            _opt_q = " ".join(options)
+            _merge(store.fts_search(_opt_q, scope, limit=k * 3), "opts",
+                   settings.rrf_lexical_weight * settings.options_channel_weight)
+            if settings.entity_channel:
+                _merge(store.entity_search(_opt_q, scope, limit=k * 3), "opts",
+                       settings.options_channel_weight)
 
     # T1.3 H1（默认关）：会话级 RRF 第二项 r2（ReFind cluster boost）
     bonus: dict[str, float] = {}
@@ -303,11 +333,17 @@ def search_memory(
     # 前后邻居、去重后按原序回填至 k。默认关（零行为变化）；开启后邻居只占
     # 同批 top_k 名额，membership 只增不换尾（超 k 才丢尾）。
     if settings.adjacency_enabled and scored:
-        from .adjacency import apply_adjacency
-        scored = apply_adjacency(
-            scored, store, scope, k=k,
-            seeds=settings.adjacency_seeds, radius=settings.adjacency_radius,
-        )
+        if _past_deadline():
+            # A-2 降级：邻接扩展要额外打 N 次 SQLite，超时路上跳过它，
+            # 直接返回已排序头部证据（仍 200、仍降序、仍 ≤top_k）。
+            from ..enhance_stats import stats
+            stats.inc("deadline_skip")
+        else:
+            from .adjacency import apply_adjacency
+            scored = apply_adjacency(
+                scored, store, scope, k=k,
+                seeds=settings.adjacency_seeds, radius=settings.adjacency_radius,
+            )
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
     # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固。
@@ -333,6 +369,21 @@ def search_memory(
         from .novel_adapter import NovelAdapter
         adapter = NovelAdapter(store, llm, settings)
         results = adapter.guard_lifecycle(results, scope)
+
+    # A-3 返回预算（官方 Q18：返回内容超限会被截断，低优先级先剪）：同一方向自剪
+    # 尾部，保证头部强证据一定在内；首条无论多大都保留（空数组在契约上合法但必零分）。
+    if settings.search_return_token_budget > 0 and len(results) > 1:
+        used = 0
+        kept: list[SearchResult] = []
+        for r in results:
+            used += estimate_tokens(r.content)
+            if kept and used > settings.search_return_token_budget:
+                break
+            kept.append(r)
+        if len(kept) < len(results):
+            from ..enhance_stats import stats
+            stats.inc("return_trim")
+            results = kept
 
     if journal is not None:
         journal.record(
