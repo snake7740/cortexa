@@ -11,7 +11,7 @@
 | 系统名 | Cortexa — 仿生 AI 记忆系统 |
 | 版本 | 0.1.0（`cortexa/__init__.py`） |
 | 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
-| 评测 commit | `938332e7c9389b7c6923a29e54271352e930ac81`（代码状态；受理后冻结，本卡填写产生的文档 commit 仅改本文件） |
+| 评测 commit | `080dbc06a58d1056deb4d1c7f8e46b883ac29cfc`（代码状态，2026-10-29 快进推送至公开仓 main；受理后冻结。本 commit 号回填产生的文档提交仅改本文件与 README，不改代码/配置） |
 | 公网端点 | `<填写：https://…>`（Add `/add`、Search `/search`、Health `/health`） |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
