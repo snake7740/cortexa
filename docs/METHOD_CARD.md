@@ -22,7 +22,7 @@
 | 组件 | 官方要求 | 本系统评测版本 |
 |---|---|---|
 | Embedding | 仅允许 text-embedding-v4 | **默认不使用任何嵌入模型**（`CORTEXA_EMBEDDING_PROVIDER=hash`：确定性特征哈希，非学习型，零外部调用）。若部署时开启语义通道，则且仅配置 `text-embedding-v4`（阿里云百炼 compatible-mode，客户端显式下发 `dimensions=512`） |
-| LLM 组件 | 仅允许 gpt-4o-mini | 评测版本 **Add/Search 路径不调用 LLM**（`CORTEXA_ASYNC_ENHANCE_ENABLED=false`、领域适配器关闭；规则引擎 `rule_wing` 在无 LLM key 时走纯规则路径）。代码中 `llm_model` 默认值固定为 `gpt-4o-mini`，若开启则不会使用其他模型 |
+| LLM 组件 | 仅允许 gpt-4o-mini | 评测版本 **Add/Search 路径不调用 LLM**（`CORTEXA_ASYNC_ENHANCE_ENABLED=false`、`CORTEXA_RULE_LLM_FALLBACK=false`、领域适配器关闭；规则引擎未命中直接落 FACT，不兜底调模型）。代码中 `llm_model` 默认值固定为 `gpt-4o-mini`，若开启则不会使用其他模型。**可申报 N/A（全链路零生成模型，官方 Q7）** |
 | Reranker | 不限 | 无独立 reranker 模型；融合后的重排为规则函数（见 §3.3） |
 
 > 结论：评测版本是**无模型调用的纯检索系统**。所有分数来自词法检索 + 规则融合 + 记忆状态调制。
@@ -41,6 +41,7 @@
 - **通道**：FTS5 词法（主通道，维度 A）；向量通道（hash 模式下为词面哈希相似，辅助）；编号精确通道（章节/编号强意图，评测中基本不触发）。
 - **融合**：Reciprocal Rank Fusion，`score = Σ w_c / (rrf_k + rank_c)`，词法权重 / 向量权重可配（默认按 2026-09-06 E1 成对实验定值）。
 - **查询意图**（`modules/query_intent.py` / `query_plan.py`）：规则识别时间指向、否定、列表意图，调整通道宽度与过滤。
+- **同会话邻接扩展**（`modules/adjacency.py`，`CORTEXA_ADJACENCY_ENABLED=true`）：融合序前 20 个种子各补同会话 ±1 时间邻居，按"前邻→种子→后邻"插位、去重、严格 ≤ top_k 预算。机制取自榜首公开方案（InvMem；AMI 亦有同类实现，见 §7），纯检索期重排、零模型调用。
 - **时间件**（`modules/temporal_filter.py` / `time_anchor.py` / `recency_arbitration.py`）：基于消息级时间戳的近因仲裁与时间窗过滤——评测版本**默认关闭**（见 §6）。
 - **截断**：严格 ≤ `top_k`（正式固定 100），只返 `id/content/score/created_at`，不返回答案文本（回答由平台生成）。
 
@@ -50,6 +51,7 @@
 
 ### 3.4 合规实现
 - `CORTEXA_JOURNAL_MODE=eval`：任务流水只记统计，不落 query/消息原文（"不记录不必要请求正文"）。
+- `/health` 在 eval 档只返 `{"status":"ok"}`（官方 Q21：无鉴权端点不暴露密钥/模型配置/库地址）。
 - 30 天删除双保险：启动时 TTL 清扫超 30 天的 eval scope + `DELETE /scope/{user_id}` 人工兜底。
 - 禁硬编码公开题；评测路径无任何数据集特判。
 
@@ -62,11 +64,11 @@ python scripts/smoke_local.py http://127.0.0.1:8000 --key <k>     # 契约自测
 python scripts/check.py                                           # compileall + ruff + retrieval-gate + pytest
 ```
 
-Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABLED=false / ASYNC_ENHANCE_ENABLED=false`；外部仅需注入 `CORTEXA_API_KEY`（及可选的 v4 嵌入三件套）。
+Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABLED=false / ASYNC_ENHANCE_ENABLED=false / RULE_LLM_FALLBACK=false / ADJACENCY_ENABLED=true`；外部仅需注入 `CORTEXA_API_KEY`（及可选的 v4 嵌入三件套）。
 
 ## 5. 本地质量门（非官方成绩，不可换算）
 
-`scripts/retrieval_gate.py` 对 `tests/golden/retrieval_baseline.json`：hit@1 0.909 / hit@5 1.000 / MRR 0.939 / para_direct 0.544（2026-10-28 复跑 PASS）；pytest 316 用例绿。
+`scripts/retrieval_gate.py` 对 `tests/golden/retrieval_baseline.json`：hit@1 0.909 / hit@5 1.000 / MRR 0.939 / para_direct 0.544（2026-10-29 复跑 PASS）；pytest 323 用例绿。邻接扩展上游数据成对回放（250 题，本地代理口径）：命中 94→129，逐题 0 回退。
 这些是**回归门**，用于防退化，不代表 AML 任何赛道得分。
 
 ## 6. 评测版本未启用（仓库中存在但默认关）
@@ -85,6 +87,7 @@ Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABL
 - 测试效应（Karpicke & Roediger, 2008）—— RARE 检索增强重编码的依据（评测版未启用）
 - MemPalace / A-MEM / LightMem —— 拓扑地图与离线整理的工程借鉴（评测版未启用）
 - Reciprocal Rank Fusion（Cormack et al., 2009）—— 多通道融合
+- **InvMem / ActiveMemoryIndex（AML 首期开源榜第 1/3 名，官方公众号公开机制说明）** —— 同会话邻接扩展（前 20 种子 ±1 邻居）为本系统直接借鉴并独立实现；选择题 options 拼接查询亦借鉴 InvMem 查询构造
 - AML 官方契约仓库 `AML-memory/agent-memory-leaderboard` 公开文件 —— 协议与评分行为参考
 - 数学约束类比（维度地板/安全遗忘条件）为本项目的类比迁移，非严格定理
 

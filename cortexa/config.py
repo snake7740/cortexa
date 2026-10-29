@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     # MEMORY_LEXICAL_WEIGHT=0.5，dense 1.0）。改检索行为必须 retrieval_gate 复跑。
     rrf_lexical_weight: float = 1.0   # fts(词法≈BM25) 通道融合权重
     rrf_vector_weight: float = 1.0    # 向量(稠密/hash) 通道融合权重
+    # ---- 同会话邻接扩展（2026-10-29，AML 榜前三共性）：融合前 20 种子各补同会话存储序
+    # 前后各 1 条邻居（邻居与种子相邻放置），去重后按原融合序回填至 top_k——
+    # 把「命中片段」恢复为「完整证据」。InvMem(第1名) MEMORY_RESULT_WINDOW=1；
+    # ActiveMemoryIndex(第3名) 离线实测 .6333→.6802（+4.7，n=1540，p<0.0001，
+    # 时序类+5.3）。默认关；过 retrieval-gate + 回放不成对回退后才进参赛默认档。
+    adjacency_enabled: bool = False
+    adjacency_seeds: int = 20    # 高置信种子数（InvMem 正式版本同值）
+    adjacency_radius: int = 1    # 每种子同会话前后各 N 条（AMI 实测半径1/2/3无差异，取1省预算）
     # ---- Q2a-D options 双通道（2026-09-06，外部复核 v3 §5.3）----
     # G1 默认=question+options 拼接单查询；双通道档=题干独立主查询 + 选项低权副通道
     # （对照实验面：选项实体不再淹没题干信号）。默认关，行为零变化。

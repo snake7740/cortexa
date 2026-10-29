@@ -149,6 +149,9 @@ class MemoryStore(ABC):
     def count(self, scope: str | None = None) -> int: ...
 
     @abstractmethod
+    def active_timeline(self, scope: str) -> list[tuple[str | None, str]]: ...
+
+    @abstractmethod
     def supersede(self, old_id: str, new_id: str, scope: str) -> None: ...
 
     @abstractmethod
@@ -265,6 +268,8 @@ class SQLiteMemoryStore(MemoryStore):
         self._vec_scopes: list[str] = []
         self._vec_pages: list[list[np.ndarray]] = []
         self._vec_matrix: np.ndarray | None = None
+        # 邻接扩展时间线缓存：scope -> ((active_count, max_rowid), [(session_id, id)])
+        self._timeline_cache: dict[str, tuple[tuple[int, int], list[tuple[str | None, str]]]] = {}
 
     # -- 序列化辅助 ---------------------------------------------------------
 
@@ -447,6 +452,32 @@ class SQLiteMemoryStore(MemoryStore):
                 "SELECT COUNT(*) FROM memories WHERE scope = ? AND status = 'ACTIVE'",
                 (scope,),
             ).fetchone()[0]
+
+    def active_timeline(self, scope: str) -> list[tuple[str | None, str]]:
+        """scope 内 ACTIVE 记忆按入库序（rowid）的 (session_id, id) 序列。
+
+        同会话邻接扩展（2026-10-29，InvMem/AMI 证据链）的消费面：存储序即对话
+        轮次序，邻居必须与种子同会话。缓存失效依据 (active 数, max rowid)：
+        新写抬高 rowid，supersede/forget 降低 active 计数，两类变更均命中。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*), MAX(rowid) FROM memories "
+                "WHERE scope = ? AND status = 'ACTIVE'",
+                (scope,),
+            ).fetchone()
+            key = (int(row[0] or 0), int(row[1] or 0))
+            cached = self._timeline_cache.get(scope)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            rows = self._conn.execute(
+                "SELECT session_id, id FROM memories "
+                "WHERE scope = ? AND status = 'ACTIVE' ORDER BY rowid",
+                (scope,),
+            ).fetchall()
+            timeline = [(r["session_id"], r["id"]) for r in rows]
+            self._timeline_cache[scope] = (key, timeline)
+            return timeline
 
     def entity_search(self, query: str, scope: str, limit: int) -> list[tuple[MemoryInstance, float]]:
         """特征访问通道（维度 B 多跳的廉价前哨）：查询提到已知实体 → 直取其记忆。

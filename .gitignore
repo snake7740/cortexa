@@ -18,3 +18,36 @@ cortexa-out/
 *.log
 _archive/
 data/aml-materials/
+
+# ---- local-only archive, NOT for the public repo ----
+# keep only what is needed to reproduce the submitted method
+docs/competition-strategy-v1.md
+docs/competition-rule-freeze-v1.md
+docs/mechanism-status.md
+docs/research/
+docs/design/
+docs/2026-09-06-*.md
+docs/review-brief-round2*.md
+docs/review-issues-plan.md
+docs/round2-prep-plan.md
+docs/tech-debt-schedule.md
+docs/dev-dogfooding.md
+docs/experiment-card-template.md
+docs/_direction_*.md
+docs/_integration_map.md
+_sandbox_compat/
+复盘报告_*.md
+examples/novel_*.py
+examples/dev_log.py
+examples/aml_diagnostic.py
+examples/lme_s_migration_eval.py
+examples/packaging_matrix.py
+examples/reports_relocate.py
+examples/semantic_index_build.py
+examples/convert_longmemeval_s.py
+examples/temporal_eval.py
+examples/gen_temporal_eval.py
+examples/judge_v1.py
+examples/eval_data/
+scripts/lme_s_temporal.py
+scripts/build_lme_s_manifest.py

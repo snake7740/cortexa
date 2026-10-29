@@ -298,10 +298,23 @@ def search_memory(
                 scored, top_n=settings.recency_arbitration_top_n,
                 keep_prev=settings.recency_arbitration_keep_prev,
             )
+    # 同会话邻接扩展（2026-10-29，AML 榜前三共性：InvMem ±1/AMI 实测 +4.7；
+    # 本地官方口径 A/B 250 题 +35 命中 0 回退）：前 N 种子各补同会话存储序
+    # 前后邻居、去重后按原序回填至 k。默认关（零行为变化）；开启后邻居只占
+    # 同批 top_k 名额，membership 只增不换尾（超 k 才丢尾）。
+    if settings.adjacency_enabled and scored:
+        from .adjacency import apply_adjacency
+        scored = apply_adjacency(
+            scored, store, scope, k=k,
+            seeds=settings.adjacency_seeds, radius=settings.adjacency_radius,
+        )
     results = [to_search_result(mem, score) for mem, score in scored[:k]]
 
-    # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固，与日志开关无关
-    store.touch_retrieval([r.id for r in results], scope)
+    # 检索命中即强化（测试效应）：只有真正返回的记忆才巩固。
+    # 参赛 eval 档跳过（冻结单 §3 口径：Search = 纯函数，无 touch 状态依赖；
+    # 2026-09-06 B1/B5 实验亦标注 FSRS touch 使跨题 hit 不可比——eval 下消除）。
+    if settings.journal_mode != "eval":
+        store.touch_retrieval([r.id for r in results], scope)
 
     # RARE-lite：检索增强重编码——同题命中的记忆两两关联写回（确定性零 LLM）。
     # 门控 = novel_adapter_enabled（P2-5b，2026-09-06）：RARE 属小说适配器能力，

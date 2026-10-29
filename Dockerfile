@@ -17,6 +17,11 @@ ENV CORTEXA_JOURNAL_MODE=eval
 ENV CORTEXA_NOVEL_ADAPTER_ENABLED=false
 # 双阶段异步增强参赛关闭（P2-5b 2026-09-06：评测部署最小模型面 + 预算确定性；真实使用可自行开启）
 ENV CORTEXA_ASYNC_ENHANCE_ENABLED=false
+# 规则分类 LLM 兜底关闭：规则引擎未命中直接落 FACT，Add/Search 全链路零生成模型
+# （官方 Q7：全链路零生成模型可申报 N/A——此 ENV 让声明在部署面成立）
+ENV CORTEXA_RULE_LLM_FALLBACK=false
+# 同会话邻接扩展（InvMem 第1名机制；AMI 离线实测 +4.7；本地官方口径 A/B 250 题 +35 命中 0 回退）
+ENV CORTEXA_ADJACENCY_ENABLED=true
 # 语义嵌入/鉴权按需经运行环境注入（CORTEXA_EMBEDDING_PROVIDER=openai +
 # CORTEXA_OPENAI_API_KEY/BASE_URL；CORTEXA_API_KEY=Memory System Key）
 

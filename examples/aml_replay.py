@@ -141,7 +141,8 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
                       token_cap: int | None = None,
                       plan: bool = False,
                       soft_governance: bool = False,
-                      packaging: str = "raw") -> dict:
+                      packaging: str = "raw",
+                      adjacency: bool = False) -> dict:
     """对若干会话执行 Add -> 逐题 Search + 分桶。返回结构化报告。
 
     provider/embedding_dim 决定向量通道（A3 成对基线：hash@512 vs minilm@384）。
@@ -162,6 +163,7 @@ def run_replay_convs(convs: list[dict], out_dir: Path, top_k: int = 5,
             rrf_lexical_weight=lexical_weight, rrf_vector_weight=vector_weight,
             query_plan_enabled=plan,
             governance_soft_enabled=soft_governance,
+            adjacency_enabled=adjacency,
         )
         settings.data_dir.mkdir(parents=True, exist_ok=True)  # 直连 store 需先建目录（server 路径由 create_app 代建）
         store = SQLiteMemoryStore(str(settings.data_dir / "cortexa.db"),
@@ -429,6 +431,8 @@ def main() -> None:
                     choices=["raw", "pm1", "pm2", "raw-atomic"],
                     help="Q8 证据包装档：raw=原文(默认) | pm1=+前1邻接 | "
                     "pm2=+前2邻接 | raw-atomic=RAW+前1支撑(原子支持近似)")
+    ap.add_argument("--adjacency", action="store_true", default=False,
+                    help="生产档同会话邻接扩展（settings.adjacency_enabled，InvMem/AMI 机制；与 --expand 原型互斥使用）")
     ap.add_argument("--token-cap", type=int, default=None,
                     help="T2.3：按 tokens/query 预算截断返回集(低分段优先删,至少留1)；"
                     "None=不截断")
@@ -464,7 +468,7 @@ def main() -> None:
                                if args.rewrites else None),
                      token_cap=args.token_cap, plan=args.plan,
                      soft_governance=args.soft_governance,
-                     packaging=args.packaging)
+                     packaging=args.packaging, adjacency=args.adjacency)
 
 
 if __name__ == "__main__":
