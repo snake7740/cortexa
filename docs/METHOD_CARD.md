@@ -8,10 +8,10 @@
 
 | 项 | 值 |
 |---|---|
-| 系统名 | Cortexa — 仿生 AI 记忆系统 |
+| 系统名 | Cortexa — 零模型确定性记忆检索系统 |
 | 版本 | 0.1.0（`cortexa/__init__.py`） |
 | 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
-| 评测 commit | `080dbc06a58d1056deb4d1c7f8e46b883ac29cfc`（代码状态，2026-10-29 快进推送至公开仓 main；受理后冻结。本 commit 号回填产生的文档提交仅改本文件与 README，不改代码/配置） |
+| 评测 commit | `080dbc06a58d1056deb4d1c7f8e46b883ac29cfc`（**代码冻结点**，公网端点镜像即由它构建；受理后不变）。其后的提交仅修订 README 与本卡的表述，**不改任何代码、配置、测试与镜像内容**——可执行 `git diff 080dbc0 HEAD -- cortexa tests scripts examples Dockerfile requirements.txt pyproject.toml .env.example` 复核，结果应为空（本卡提交时实测为空）。 |
 | 公网端点 | `<填写：https://…>`（Add `/add`、Search `/search`、Health `/health`） |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
@@ -21,7 +21,7 @@
 
 | 组件 | 官方要求 | 本系统评测版本 |
 |---|---|---|
-| Embedding | 仅允许 text-embedding-v4 | **默认不使用任何嵌入模型**（`CORTEXA_EMBEDDING_PROVIDER=hash`：确定性特征哈希，非学习型，零外部调用）。若部署时开启语义通道，则且仅配置 `text-embedding-v4`（阿里云百炼 compatible-mode，客户端显式下发 `dimensions=512`） |
+| Embedding | 仅允许 text-embedding-v4 | **不使用任何嵌入模型**（`CORTEXA_EMBEDDING_PROVIDER=hash`：确定性特征哈希，非学习型，零外部调用）。已就 v4 语义通道按官方口径 250 题成对 A/B：各项指标均劣于 hash 基线，因此**基于证据主动关闭**（非尚未实验）。代码保留 openai provider 能力，若开启则显式下发 `dimensions=512` |
 | LLM 组件 | 仅允许 gpt-4o-mini | 评测版本 **Add/Search 路径不调用 LLM**（`CORTEXA_ASYNC_ENHANCE_ENABLED=false`、`CORTEXA_RULE_LLM_FALLBACK=false`、领域适配器关闭；规则引擎未命中直接落 FACT，不兜底调模型）。代码中 `llm_model` 默认值固定为 `gpt-4o-mini`，若开启则不会使用其他模型。**可申报 N/A（全链路零生成模型，官方 Q7）** |
 | Reranker | 不限 | 无独立 reranker 模型；融合后的重排为规则函数（见 §3.3） |
 
@@ -45,7 +45,8 @@
 - **时间件**（`modules/temporal_filter.py` / `time_anchor.py` / `recency_arbitration.py`）：基于消息级时间戳的近因仲裁与时间窗过滤——评测版本**默认关闭**（见 §6）。
 - **截断**：严格 ≤ `top_k`（正式固定 100），只返 `id/content/score/created_at`，不返回答案文本（回答由平台生成）。
 
-### 3.3 记忆状态调制（仿生部分）
+### 3.3 记忆状态调制
+> 定位说明：本节机制早期被当作核心卖点（仿生记忆），实测后已降级为**辅助与真实使用侧**：评测档无复习史，保留度调制属中性，不构成本系统的提分宣称；本系统分数来自 §3.2 的检索路径。
 - **保留度**（`modules/decay.py`）：借鉴 FSRS 间隔重复的 DSR 模型（难度/稳定性/可提取性）给每条记忆一个保留度因子，参与最终排序的乘性调制；评测档关闭 touch（检索不改状态），保证 Search 是 `f(user_id, 已存记忆, 当前 query)` 的纯函数，跨样本无状态泄漏。
 - **治理 / 遗忘**（`modules/content_forget.py` / `consistency.py`，`CORTEXA_SCENE=aml` schema）：显式删除/撤回类消息触发对应记忆的治理标记，Search 侧按标记降权或排除（维度 D）。
 
@@ -58,7 +59,7 @@
 ## 4. 复现
 
 ```bash
-git clone <repo> && cd cortexa-mvp && git checkout <commit>
+git clone https://github.com/snake7740/cortexa.git && cd cortexa && git checkout 080dbc06a58d1056deb4d1c7f8e46b883ac29cfc
 docker build -t cortexa . && docker run -d -p 8000:8000 -e CORTEXA_API_KEY=<k> -v cortexa-data:/app/data cortexa
 python scripts/smoke_local.py http://127.0.0.1:8000 --key <k>     # 契约自测
 python scripts/check.py                                           # compileall + ruff + retrieval-gate + pytest
@@ -75,7 +76,7 @@ Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABL
 
 | 机制 | 模块 | 状态 | 原因 |
 |---|---|---|---|
-| 语义嵌入通道 | `llm/client.embed` + `CORTEXA_SEMANTIC_CHANNEL` | 关 | 开源榜仅允许 v4；未做 v4 成对实验，不盲开 |
+| 语义嵌入通道 | `llm/client.embed` + `CORTEXA_SEMANTIC_CHANNEL` | 关 | **已做官方口径 250 题成对 A/B，v4 各项均劣于 hash 基线**，基于证据关闭 |
 | 异步双阶段增强（实体/关系补全） | `enhancer.py` | 关 | 最小模型面；预算确定性 |
 | 领域适配器 / RARE-lite 检索重编码 | `modules/novel_adapter.py` | 关 | 面向小说场景；评测要求 Search 纯读 |
 | 实体通道 / 会话 RRF / 时间过滤 / 近因仲裁 | `modules/graph.py` `session_rrf.py` `temporal_filter.py` `recency_arbitration.py` | 关 | 未通过成对实验 + retrieval-gate，不进默认 |
@@ -93,6 +94,7 @@ Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABL
 
 ## 8. 已知局限（如实）
 
-- 评测版本无学习型嵌入，多跳（B）与同义改写召回弱于 dense 方案；真实分布本地探针召回约 1/88，未做规模压测。
+- 评测版本无学习型嵌入，多跳（B）与同义改写召回弱于 dense 方案；真实分布本地探针召回约 1/88。
 - 时间件默认关，维度 C 依赖词法命中时间表达。
+- **运行限制（如实）**：单实例单进程，未实现 429 + Retry-After 限流；超出并发上限时请求排队而非规范拒绝。因此向平台申报的 Add/Search 并发上限按本地实测（Add p95 约 108ms、Search p95 约 10ms）保守填写。
 - 本期（10/31 前）只有 1 次 Full 机会，无官方诊断回路，优先级定在"契约零错 + 稳定在线"而非分数冲刺。
