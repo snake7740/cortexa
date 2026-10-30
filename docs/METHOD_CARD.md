@@ -11,7 +11,7 @@
 | 系统名 | Cortexa — 零模型确定性记忆检索系统 |
 | 版本 | 0.1.0（`cortexa/__init__.py`） |
 | 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
-| 评测 commit | `fb56f83b9f8617a69de5ccb3cd5d7d687d37fa29`（**代码冻结点**，公网端点镜像由它构建；官方受理后不变）。它是 `080dbc0` 的后继——官方规则是「受理后才冻结」，本次在受理前只加运行时护栏（准入阀/deadline/返回预算），**不改 Add/Search 地址、不改返回内容与字段**；改动说明写在 commit `fb56f83` 正文里（版本登记要求）。其后的提交仅修订 README 与本卡表述，**不改任何代码、配置、测试与镜像内容**——可执行 `git diff fb56f83 HEAD -- cortexa tests scripts examples Dockerfile requirements.txt pyproject.toml .env.example` 复核，结果应为空。 |
+| 评测 commit | `0caf86993a722ad258325f668ba63c4401286d38`（**代码冻结点**，公网端点镜像由它构建；官方受理后不变）。它是 `fb56f83` 的后继——官方规则是「受理后才冻结」，受理前又发现一个并发正确性 P0（`TaskJournal` 与 store 共用同一个 sqlite3 连接但各持一把独立 RLock），必须修：不修则并发灌库时返 500 并**静默丢记忆**，比任何护栏都致命；同时把 deadline 阈值从 200ms 重定到 5000ms（200ms 对齐的是我方内部红线，不是官方约束，详 §8）。上一批的运行时护栏（准入阀/deadline/返回预算）仍在本 commit 内，**不改 Add/Search 地址、不改返回内容与字段**；改动说明写在 commit `0caf869` 正文里（版本登记要求）。其后的提交仅修订 README 与本卡表述，**不改任何代码、配置、测试与镜像内容**——可执行 `git diff 0caf869 HEAD -- cortexa tests scripts examples Dockerfile requirements.txt pyproject.toml .env.example` 复核，结果应为空。 |
 | 公网端点 | `http://47.79.226.71:8000`（Add `/add`、Search `/search`、Health `/health`）；同容器另绑标准端口 `http://47.79.226.71`（80）作为后路，两端点同一实例同一数据卷。由评测 commit 构建的镜像单容器常驻，容器 `--restart unless-stopped`。契约自测（`scripts/smoke_local.py` 对该公网地址）全部通过：Add 200 / Search 命中 / 无 key 与错 key 均 401。 |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
@@ -59,7 +59,7 @@
 ## 4. 复现
 
 ```bash
-git clone https://github.com/snake7740/cortexa.git && cd cortexa && git checkout fb56f83b9f8617a69de5ccb3cd5d7d687d37fa29
+git clone https://github.com/snake7740/cortexa.git && cd cortexa && git checkout 0caf86993a722ad258325f668ba63c4401286d38
 docker build -t cortexa . && docker run -d -p 8000:8000 -e CORTEXA_API_KEY=<k> -v cortexa-data:/app/data cortexa
 python scripts/smoke_local.py http://127.0.0.1:8000 --key <k>     # 契约自测
 python scripts/check.py                                           # compileall + ruff + retrieval-gate + pytest
