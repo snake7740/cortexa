@@ -69,7 +69,7 @@ Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABL
 
 ## 5. 本地质量门（非官方成绩，不可换算）
 
-`scripts/retrieval_gate.py` 对 `tests/golden/retrieval_baseline.json`：hit@1 0.909 / hit@5 1.000 / MRR 0.939 / para_direct 0.544（2026-10-29 复跑 PASS）；pytest 323 用例绿。邻接扩展上游数据成对回放（250 题，本地代理口径）：命中 94→129，逐题 0 回退。
+`scripts/retrieval_gate.py` 对 `tests/golden/retrieval_baseline.json`：hit@1 0.909 / hit@5 1.000 / MRR 0.939 / para_direct 0.544（2026-10-30 在评测 commit 上复跑 PASS，与基线零回退）；pytest 337 用例绿（含 `TestSharedConnectionLock` 并发装配执法）。邻接扩展上游数据成对回放（250 题，本地代理口径）：命中 94→129，逐题 0 回退。
 这些是**回归门**，用于防退化，不代表 AML 任何赛道得分。
 
 ## 6. 评测版本未启用（仓库中存在但默认关）
