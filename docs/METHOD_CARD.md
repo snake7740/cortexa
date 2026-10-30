@@ -13,6 +13,7 @@
 | 公开仓库 | https://github.com/snake7740/cortexa （公开，MIT） |
 | 评测 commit | `0caf86993a722ad258325f668ba63c4401286d38`（**代码冻结点**，公网端点镜像由它构建；官方受理后不变）。它是 `fb56f83` 的后继——官方规则是「受理后才冻结」，受理前又发现一个并发正确性 P0（`TaskJournal` 与 store 共用同一个 sqlite3 连接但各持一把独立 RLock），必须修：不修则并发灌库时返 500 并**静默丢记忆**，比任何护栏都致命；同时把 deadline 阈值从 200ms 重定到 5000ms（200ms 对齐的是我方内部红线，不是官方约束，详 §8）。上一批的运行时护栏（准入阀/deadline/返回预算）仍在本 commit 内，**不改 Add/Search 地址、不改返回内容与字段**；改动说明写在 commit `0caf869` 正文里（版本登记要求）。其后的提交仅修订 README 与本卡表述，**不改任何代码、配置、测试与镜像内容**——可执行 `git diff 0caf869 HEAD -- cortexa tests scripts examples Dockerfile requirements.txt pyproject.toml .env.example` 复核，结果应为空。 |
 | 公网端点 | `http://47.79.226.71:8000`（Add `/add`、Search `/search`、Health `/health`）；同容器另绑标准端口 `http://47.79.226.71`（80）作为后路，两端点同一实例同一数据卷。由评测 commit 构建的镜像单容器常驻，容器 `--restart unless-stopped`。契约自测（`scripts/smoke_local.py` 对该公网地址）全部通过：Add 200 / Search 命中 / 无 key 与错 key 均 401。 |
+| 官方登记版本 | 榜单侧版本名 `0.1.0-aml-0caf869`（`version_e2f31aea1ff0`，2026-10-30 自助改绑，与评测 commit 对齐；鉴权沿用 Bearer + Memory System Key）。学术榜。端点登记一次覆盖三赛道，故官方 `track-eligibility` 回显 textual / coding / multimodal 三项均为 `bound=true`；但**本期我方拟参评类型仅为文本记忆**（见 §9「赛道面」）。详见 §9。 |
 | 鉴权 | Memory System Key；`Authorization: Token <k>` / `Bearer <k>` / `X-Api-Key: <k>` 三头任一 |
 | 语言/运行时 | Python ≥3.11，FastAPI + SQLite（FTS5），单进程单容器 |
 | License | MIT |
@@ -33,7 +34,7 @@
 1. 官方 `messages[]` 按消息粒度切为记忆实例，保留 `role`、消息级 `timestamp`（Unix ms→ISO8601Z），`user_id` 映射为内部 `scope`（精确隔离，不做前缀/模糊匹配），`session_id` 作为会话锚。
 2. **规则 Wing 编码**（`modules/rule_wing.py` + `modules/encoding.py`）：对内容打记忆类型标签（事实/事件/偏好/任务…）与**七维度地板**特征（`modules/dimension_floor.py`：显式事实 A / 多跳 B / 时间事件 C / 治理 D / 个性化 E / 上下文学习 G / 认识论安全 H），纯规则，可复现。
 3. 同步写入 SQLite：正文入 FTS5 索引；向量列按 `embedding_dim=512` 建矩阵（hash 模式下为确定性哈希向量）。
-4. **幂等**：同 `request_id` 重放返回 200/`success:true`，不重复写（官方重试语义）。
+4. **幂等**：重复写入不产生重复记忆，重放仍返回 200/`success:true`，`request_id` 逐字节原样回显。机制如实：唯一键是数据库的 `UNIQUE (scope, content_hash)` + 忽略式插入（`storage.py`），**不是以 `request_id` 建唯一约束**；`request_id` 另落 `source_request_id` 供追溯。因官方重试语义是「保持同一 request_id 与请求体」，重试必携带完全相同内容，故在重试路径上内容级去重与 ID 级去重结果等价。连带特性：同一 `user_id` 内原文完全相同的两条内容只保留一条。
 5. Add 返回前全部落盘，返回后立即可被 Search（同步写入契约）。
 
 ### 3.2 Search（检索）
@@ -118,3 +119,22 @@ Docker 镜像固化 `CORTEXA_SCENE=aml / JOURNAL_MODE=eval / NOVEL_ADAPTER_ENABL
   流水**，锁同源 0 异常、300/300 全落库。现由 `server.py`/`facade.py` 注入 `store.lock`，
   `tests/test_journal.py::TestSharedConnectionLock` 同时钉死装配同源与并发零异常。
 - 本期（10/31 前）只有 1 次 Full 机会，无官方诊断回路，优先级定在"契约零错 + 稳定在线"而非分数冲刺。
+
+## 9. 官方评测状态（平台回显原文，非本地推算）
+
+| 项 | 值 |
+|---|---|
+| 版本改绑 | `version_e2f31aea1ff0` = `0.1.0-aml-0caf869`，`status=active`，`memory_api_key_bound=true`，`api_auth_scheme=bearer`。官方 2026-10-30 邮件回显的 Add/Search Token 与容器实际运行 key 逐字符相同（64 hex），首请求 401 风险已排除。 |
+| textual Smoke | `teval_b0ce14629963d965` **succeeded**（2026-10-30T04:10:08Z，46/46 题，零 failures）。总分 **0.6377**。 |
+| 能力维 | A 0.800(5) / B 0.667(3) / C 0.900(4) / D 0.394(6) / E 1.000(2) / G 0.550(4) / H 0.583(2) / streaming 0.448(28) |
+| 短板子能力 | F1 0.167 / G2 0.200 / D1 0.333 / D2 0.400 / streaming.online 0.440(26) |
+| textual Full | **已受理并冻结**：`teval_9a721518121971b3`，label `full-0caf869-textual`，2026-10-30T05:12:27Z 起跑，参数与已通过 Smoke 完全一致（full / Add 64 / Search 128 / top_k 100）。提交前契约自测全绿（Bearer 口径：Add 200 1238ms、同 request_id 重放 200、写后立读命中、错 key/无 key 401、DELETE 200）。Add 真实总量 **42176 条 = textual 分支 38183 + streaming 分支 3993**（首帧只报 streaming 分支的 3993，不是总量）。受理后代码冻结，不可回退。 |
+| 官方受理通知 | 官网系统邮件（2026-10-30）确认开跑，硬口径：完整评测通常 0.5—2 天（实际可更长）；单 Add/Search 请求最长等待 30 分钟；本期允许 Add 16—64、Search 16—256；平台对部分临时异常**有界重试**；须按 request_id 幂等、按 user_id 隔离、**运行中不得清空记忆或提前回收**（部分赛道交替执行 Add 与 Search）。逐条对账结论：①本系统零外部模型、零上游 API，「欠费/额度/密钥过期」类中断风险天然免疫；②准入阀实测为「超软上限 64 先排最多 2000ms、排完照常处理，仅在途 ≥512 才 429」（`server.py` `_AdmissionGate.acquire`）——64+128=192 峰值下 429 实际不触发，故不依赖平台重试；③幂等按 **(scope, content_hash) 数据库唯一键 + INSERT OR IGNORE** 实现（非以 request_id 为键），重试不重复写入，`request_id` 原样回显并落 `source_request_id` 追溯；④评测记忆不被自动回收：30 天 TTL 清扫仅在**进程启动时**执行一次，且只删标记为 eval 且末次写入超 30 天的 scope，评测途中不发 `DELETE /scope`；⑤同步 Add 语义=返回成功前已落库且可立即检索。 |
+| 赛道面 | 官方 `track-eligibility`（版本 `version_e2f31aea1ff0`，2026-10-30 读取）：textual / coding / multimodal 三项均 `bound=true`（一份端点登记覆盖三赛道）。配额独立计：textual Smoke `passed`、Full 1/2（第 2 次解锁 2026-11-29，本期作废）；coding Smoke 1/30 已用、`smoke_allowed=true`、`new_full_allowed=true`；multimodal 0/30 未动。**multimodal 本期不可参评**：官方契约要求 Add 可收“文本+Base64 图片”有序内容数组，而冻结版 `models.py` 的内容字段只接受字符串（改代码即破坏“版本一致”）。coding 赛道因 `max_active_jobs=1` 被 textual Full 占住槽位，槽位释放时已过 10/31 材料截止，是否可追加待官方答复。 |
+| 运行监控（非自证面） | 监控仅用官网接口 + 无副作用 `/health`。05:12:27Z 起跑后采样：06:28 Add 21.3%（8982/42176）、**failures 始终 0**、`submitted == committed`（9294=9294，无在途丢数）；06:45 总体 25.2%（textual 10480/38183 + streaming 143/3993）；07:21 总体 32.5%（textual 13548/38183 + streaming 175/3993）。分支速率差异巨大：textual ≈1.4–1.8 条/秒，streaming ≈0.9–1.4 条/分钟 → 总时长由 streaming 决定。eval 档 `/health` 按官方 Q21 只返 `{"status":"ok"}`，并发计数不外露（合规代价，非缺陷）。 |
+| `/health` 负载相关延迟（2026-10-30 境内公网实测） | 空闲窗口（受理前 04:43Z）4 连探 0.198–0.255s 全 200；Full 高峰期复测：`GET /health` 仍返 200，但**首字节 20.1–46.4s**（TCP 建连稳在 0.092–0.134s，可排除链路因素）。同时刻对照：格式非法体的 `POST /add` 短 0.22s 返 422（不进线程池），带合法体的无 key / 错 key `POST /add` 均返 401 但首字节 2.9s / 14.2s。归因（推断，未做服务端插桩）：端点均为同步 `def` 而进 anyio 线程池，Add/Search 满额在途时健康检查与鉴权拒绝路径需排队取槽位。**未因此产生任何失败**（failures 0，契约校验未报错）。 |
+| 提交时端点状态 | 受理前刚跑完一次公网契约自测（`scripts/smoke_local.py --scheme bearer --top-k 100`）：SMOKE OK，全部 [OK]。评测进行中不再向公网发 Add/Search 探针（会写脏数据并抢并发额度），只保留无副作用的存活观察。 |
+| 并发申报 | Add 64（契约上限）/ Search 128，textual 另加 `top_k=100`；均已通过 Smoke 实测背书。 |
+| coding Smoke | `teval_2b0ad2fb3f5d3e1a`（`coding_model=flash`，64/128）**已主动取消**（`status=canceled`、`error=null`，2026-10-30T04:43:32Z）：卡 seed 0/1 共 31 分钟零进度，同窗口我方公网 4 连 `/health` 0.198–0.255s 全 200、`/search` 200、`DELETE` 200 → 卡点属平台侧。取消原因：`max_active_jobs=1` 且活跃态含 `running`，挂死作业会占住唯一槽位挡住 textual Full；`/resume` 服务端拒绝（“only failed or canceled … can be resumed”），所以唯一自愈手段是 `/cancel`。coding 额度 29/30 保留、冷却至 05:11:17Z。 |
+| 参赛者档案 | `POST /access/profile` 不存则不能提交，已于 2026-10-30 填报并验证落库：Framework name（公开）`Cortexa — 零模型确定性记忆检索系统`（未改）/ Affiliation `Independent Developer` / Advising teacher(s) `None` / Team name 与 Team members 留空——**参评主体为个人开发者，无机构、无指导教师（如实）**。 |
+| 不可自助修改 | 申请时的说明框（notes）与 project_url 只有 POST 创建、无 GET/PUT——旧口径「无 429 限流」**在平台记录上改不掉**（实际运行代码 0caf869 已有硬上限 429+Retry-After，以本卡 §8 为准）。LDBD Key 与 Add/Search Token 由官方签发，不可改。 |
