@@ -21,13 +21,17 @@ W2 管线：/add = 识别分流(rule_wing) -> 编码标注(encoding) -> 维度�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import threading
 import time
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from . import __version__
 from .config import Settings, get_settings
@@ -161,7 +165,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.admission_wait_ms, settings.search_deadline_ms,
             settings.search_return_token_budget,
         )
+        # 热路径时间序列采样器（2026-10-31 首次补上）：CORTEXA_HOTPATH_SAMPLE_S=0 关
+        stop_sampler = threading.Event()
+        interval_s = float(os.environ.get("CORTEXA_HOTPATH_SAMPLE_S", "15"))
+        sampler: threading.Thread | None = None
+        if interval_s > 0:
+            sampler = threading.Thread(
+                target=_hotpath_series, args=(stop_sampler, interval_s),
+                daemon=True, name="cortexa-hotpath",
+            )
+            sampler.start()
         yield
+        if sampler is not None:
+            stop_sampler.set()
         # P1-5：服务退出前 drain 增强线程（写库需在 store.close 之前完成）
         try:
             from .enhancer import wait_enhance_threads
@@ -208,9 +224,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     search_latencies: deque[float] = deque(maxlen=500)
     add_latencies: deque[float] = deque(maxlen=500)
 
+    # 热路径插桩（2026-10-31）：R8/R9 已把“算得慢”排除（324 条纯计算 p95=20.2 s，
+    # 超 1800 s 预算者 0 条），剩下的唯一缺口是把**排队等待**从总耗时里剖出来，
+    # 并直接看同步 handler 的真实并行度是否封顶在 anyio 默认 40。
+    # 只加计数器与 stdout 日志，不改任何返回体/状态码/响应头。
+    hotpath_lock = threading.Lock()
+    hotpath = {
+        "handler_active": 0,   # 正在同步 handler 内执行的请求数（= 线程池实际占用）
+        "handler_peak": 0,     # 历史峰值；等于 40 即坐实线程池上限是真实并行度
+        "add_total": 0,
+        "search_total": 0,
+    }
+    queue_wait_ms: deque[float] = deque(maxlen=2000)    # 中间件入口 -> handler 入口
+    add_compute_ms: deque[float] = deque(maxlen=1000)   # handler 自身耗时
+    search_compute_ms: deque[float] = deque(maxlen=1000)
+
+    @contextmanager
+    def hotpath_span(label: str, request: Request):
+        """记录一次同步 handler 的排队等待与实际占用，异常原样上抛。"""
+        entered = time.perf_counter()
+        arrived = getattr(request.state, "arrived_at", None)
+        if isinstance(arrived, float):
+            queue_wait_ms.append((entered - arrived) * 1000)
+        with hotpath_lock:
+            hotpath["handler_active"] += 1
+            hotpath["handler_peak"] = max(
+                hotpath["handler_peak"], hotpath["handler_active"]
+            )
+            hotpath[f"{label}_total"] += 1
+        try:
+            yield entered
+        finally:
+            cost_ms = (time.perf_counter() - entered) * 1000
+            (add_compute_ms if label == "add" else search_compute_ms).append(cost_ms)
+            with hotpath_lock:
+                hotpath["handler_active"] -= 1
+
+    def hotpath_snapshot() -> dict:
+        """插桩面快照：纯读内存计数，不触库、不取 store 锁。"""
+
+        def _p(v: deque[float], q: float) -> float:
+            if not v:
+                return 0.0
+            ordered = sorted(v)
+            return ordered[min(len(ordered) - 1, int(len(ordered) * q))]
+
+        with hotpath_lock:
+            snap = dict(hotpath)
+        return {
+            **snap,
+            "queue_wait_p50_ms": round(_p(queue_wait_ms, 0.5), 1),
+            "queue_wait_p95_ms": round(_p(queue_wait_ms, 0.95), 1),
+            "queue_wait_max_ms": round(max(queue_wait_ms), 1) if queue_wait_ms else 0.0,
+            "add_compute_p95_ms": round(_p(add_compute_ms, 0.95), 1),
+            "search_compute_p95_ms": round(_p(search_compute_ms, 0.95), 1),
+            "samples": {"queue": len(queue_wait_ms), "add": len(add_compute_ms),
+                        "search": len(search_compute_ms)},
+        }
+
+    def _hotpath_series(stop: threading.Event, interval_s: float) -> None:
+        """把插桩计数按时间序列写 stdout（docker logs 可直接取）。
+
+        为什么走日志而不是 /health：容器以 JOURNAL_MODE=eval 运行，官方 Q21 要求
+        健康检查不暴露内部信息，eval 档 /health 只有 {"status":"ok"}；而内存 deque
+        最易失——进程一重启就没了，续跑前必须能拿到历史序列。
+        不触库、不取 store 锁；窗口内无流量则不输出，跑单测时不会产生噪声。
+        """
+        prev_add = prev_search = -1
+        while not stop.wait(interval_s):
+            snap = hotpath_snapshot()
+            if (snap["add_total"] == prev_add and snap["search_total"] == prev_search):
+                continue
+            prev_add, prev_search = snap["add_total"], snap["search_total"]
+            logger.info(
+                "HOTPATH %s", json.dumps(
+                    {"ev": "hotpath", "ts": round(time.time(), 3), **snap,
+                     "llm": llm.resilience.snapshot()},
+                    ensure_ascii=False,
+                )
+            )
+
     @app.middleware("http")
     async def observe_latency(request: Request, call_next):
         started = time.perf_counter()
+        request.state.arrived_at = started  # 供 handler 侧剖出排队等待
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000
         if request.url.path == "/search":
@@ -224,39 +321,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/add", response_model=AddResponse,
               dependencies=[Depends(require_key), Depends(admit)])
-    def add(req: AddRequest) -> AddResponse:
+    def add(req: AddRequest, request: Request) -> AddResponse:
         """同步写入管线（modules/pipeline.run_add，与进程内门面共用同一实现）。"""
-        return run_add(store, llm, settings, req, journal=journal)
+        with hotpath_span("add", request):
+            return run_add(store, llm, settings, req, journal=journal)
 
     # -- Search -------------------------------------------------------------
 
     @app.post("/search", response_model=SearchResponse,
               dependencies=[Depends(require_key), Depends(admit)])
-    def search(req: SearchRequest) -> SearchResponse:
+    def search(req: SearchRequest, request: Request) -> SearchResponse:
         """双通道召回 + RRF 融合（管线在 modules/search.py，W2 迁出）。"""
-        return SearchResponse(
-            data=search_memory(
-                store,
-                llm,
-                settings,
-                query=req.query,
-                scope=req.scope,
-                top_k=req.top_k,
-                journal=journal,
-                options=req.options,  # G1：选择题选项参与统一召回（InvMem 查询构造）
+        with hotpath_span("search", request):
+            return SearchResponse(
+                data=search_memory(
+                    store,
+                    llm,
+                    settings,
+                    query=req.query,
+                    scope=req.scope,
+                    top_k=req.top_k,
+                    journal=journal,
+                    options=req.options,  # G1：选择题选项参与统一召回（InvMem 查询构造）
+                )
             )
-        )
 
     # -- Health / 运维 -------------------------------------------------------
 
-    @app.get("/health")
-    def health() -> dict:
-        # 官方 Q&A（第二期，2026-10-29 文章 Q21）：Health 只用于存活探针，
-        # 「不应暴露密钥、模型配置、数据库地址或其他内部信息」——参赛 eval 档
-        # 返回最小 2xx 面；真实使用（app 档）保留全量自证面。
-        if settings.journal_mode == "eval":
-            return {"status": "ok"}
-
+    def _full_health() -> dict:
+        # app 档全量自证面：原 health 函数体逐字保留，仅从路由中提出。
         def _p95(samples: deque[float]) -> float:
             if not samples:
                 return 0.0
@@ -288,7 +381,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "enhance_stats": enhance_stats.snapshot(),
             # A 层自证：在途/峰值/排队/拒绝计数（"限流已实现"从声明变成可查）
             "admission": gate.snapshot(),
+            # 热路径插桩（eval 档 /health 按 Q21 不暴露内部信息，时间序列走 stdout）
+            "hotpath": hotpath_snapshot(),
         }
+
+    @app.get("/health")
+    async def health() -> dict:
+        # 官方 Q&A（第二期，2026-10-29 文章 Q21）：Health 只用于存活探针，
+        # 「不应暴露密钥、模型配置、数据库地址或其他内部信息」——参赛 eval 档
+        # 返回最小 2xx 面；真实使用（app 档）保留全量自证面。
+        # A 层隔离（2026-10-30 离线取证）：eval 档在事件循环直接应答，不占同步线程池。
+        # 依据：业务端点全为同步 def 共用 40 线程池（64 路并发实测峰值 40），满额在途时
+        # 同步 /health 需等一条业务请求让出线程。改后效果取**真实 cortexa.server:app**
+        # 在 64 线程 × 3 轮 × 每条 40 消息满负载下的六次抽样：原版最坏 60.41 s → 改后
+        # 最坏 0.88 s（复跑一次最坏 0.15 s）。此前信中的 0.016 s 出自同构最小应用，
+        # 不是本端点测量，不得作为对外口径。
+        # eval 分支不触库、无阻塞调用，故不违反 P0-2（禁止 async 包同步体）；app 档仍经
+        # run_in_threadpool 走线程池，全量自证面行为逐字不变。
+        if settings.journal_mode == "eval":
+            return {"status": "ok"}
+        return await run_in_threadpool(_full_health)
 
     @app.delete("/scope/{scope}", dependencies=[Depends(require_key)])
     def delete_scope(scope: str) -> dict:
