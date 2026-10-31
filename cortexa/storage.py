@@ -19,6 +19,7 @@ import sqlite3
 import threading
 import time
 from abc import ABC, abstractmethod
+from typing import Sequence
 
 import numpy as np
 
@@ -238,6 +239,72 @@ SUBJECT_SQL_EXPR = (
 )
 
 
+class _ReadRows:
+    """在闸门内取完的只读结果：调用方拿到已固化的行，连接上不留活动语句。
+
+    为什么必须固化：SQLite 只允许在没有任何活动语句时真正关闭连接。若 execute()
+    出闸门后才由调用方 fetch，close() 就可能落在“已 execute、未 fetch”的窗口里——
+    sqlite3_close 返回 SQLITE_BUSY、连接实际没关，却被当作回收成功从注册表摘掉，
+    于是文件句柄永久被钉住（实测 WinError 32），注册表还显示干净，属于假绿。
+    """
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[sqlite3.Row]) -> None:
+        self._rows = rows
+
+    def fetchone(self) -> sqlite3.Row | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[sqlite3.Row]:
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
+class _ReadConn:
+    """只读连接的包装：每条连接自带一把“语句闸门”锁。
+
+    为什么不能直接关一个可能正被别的线程用的 sqlite3 连接：实测在另一个线程
+    走语句中间关它，会得到 Windows fatal exception: access violation——进程直接
+    没了，不是 Python 异常。所以连接只能在这两条语句之间的间隙被回收：
+      · 使用方：execute 持锁完成“执行 + 取完行”，出了闸门连接上必无活动语句；
+      · close()：拿得到闸门才真关，且只在真关掉后才认领；拿不到或关不掉就返回
+        False，由调用方继续持有，绝不留下“没关却登记成已死”的泄漏；
+      · 关闭后重入 execute 直接报错，不会悄悄复用到半死的连接。
+    """
+
+    __slots__ = ("_con", "_gate", "_dead")
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self._con = con
+        self._gate = threading.Lock()
+        self._dead = False
+
+    def execute(self, sql: str, params: Sequence = ()) -> _ReadRows:  # noqa: ANN001
+        with self._gate:
+            if self._dead:
+                raise sqlite3.ProgrammingError("store already closed")
+            return _ReadRows(self._con.execute(sql, params).fetchall())
+
+    def release(self, wait_s: float) -> bool:
+        """尝试安全回收：等到闸门就关掉，等不到/关不掉返回 False（调用方自己收尾）。"""
+        if not self._gate.acquire(timeout=wait_s):
+            return False
+        try:
+            self._con.close()
+        except sqlite3.Error:
+            self._gate.release()
+            return False  # 没真的关掉，不谎报回收成功
+        self._dead = True
+        self._gate.release()
+        return True
+
+
 class SQLiteMemoryStore(MemoryStore):
     """MVP 嵌入式实现：SQLite + FTS5 + 内存 numpy 向量余弦。"""
 
@@ -248,7 +315,19 @@ class SQLiteMemoryStore(MemoryStore):
 
     def __init__(self, db_path: str, embedding_dim: int = 512) -> None:
         self._dim = embedding_dim
+        self._db_path = db_path
+        # 读写分离（2026-10-31 AML Full SEARCH_TIMEOUT 根因修复）：
+        # _lock 回归它的本义——只串行写入。SQLite 官方 WAL 口径是"读者不挡写者、
+        # 写者不挡读者，同时只有一个写者"，而原实现把每条纯 SELECT 也关进 _lock，
+        # 等于自己把这个能力关掉了：64 路 Add 洪峰下 Search 被挤到 60 s+（实测）。
+        # 纯读改走线程本地只读连接（见 _read_connection），不再排队等写锁。
+        # _cache_lock 专管进程内向量/时间线缓存；锁序固定 _lock -> _cache_lock，
+        # 读侧永不取 _lock，故不构成死锁环。
+        self._cache_lock = threading.RLock()
         self._lock = threading.RLock()
+        self._read_local = threading.local()
+        self._read_cons: list[tuple[int, _ReadConn]] = []
+        self._closed = False
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -292,6 +371,47 @@ class SQLiteMemoryStore(MemoryStore):
         ] = {}
         # ACTIVE 成员集结构性变更计数：supersede/forget/clear_scope 递增
         self._active_set_version = 0
+
+    # -- 只读连接（读写分离的读侧承载）---------------------------------------
+
+    def _read_connection(self) -> _ReadConn:
+        """本线程的只读连接：WAL 下与写连接并发读，不取写锁、不共享写事务状态。
+
+        成熟做法取自社区共识——"别让线程池替你管 SQLite 并发，读写各自配调度"：
+        读用独立连接，写只用那一条连接 + 一把锁。check_same_thread=False 只是让
+        close() 能从任意线程回收句柄；连接由 threading.local 持有，实际只有创建
+        它的线程会用到。query_only 是护栏：谁想在这条连接上写库，SQLite 直接报错。
+        """
+        con: _ReadConn | None = getattr(self._read_local, "con", None)
+        if con is None:
+            with self._cache_lock:
+                if self._closed:
+                    raise sqlite3.ProgrammingError("store already closed")
+                raw = sqlite3.connect(
+                    self._db_path, timeout=30, check_same_thread=False
+                )
+                raw.row_factory = sqlite3.Row
+                raw.execute("PRAGMA query_only=ON")
+                con = _ReadConn(raw)
+                self._read_local.con = con
+                self._read_cons.append((threading.get_ident(), con))
+                self._reap_dead_read_connections()
+        return con
+
+    def _reap_dead_read_connections(self) -> None:
+        """回收“主人已退”的只读连接（调用方持 `_cache_lock`）。
+
+        必须做，不然注册表本身会把线程建好的连接强引用住：线程早就退了，
+        文件句柄还不放，Windows 下直接钉住临时库目录（实测 12 例 rmtree 失败）。
+        只碰主人已死的：正被活线程用的连接跳线程硬关会 access violation。
+        """
+        me = threading.get_ident()
+        alive = {t.ident for t in threading.enumerate()}
+        keep: list[tuple[int, _ReadConn]] = []
+        for ident, rc in self._read_cons:
+            if ident == me or ident in alive or not rc.release(0.0):
+                keep.append((ident, rc))
+        self._read_cons = keep
 
     # -- 治理主体查找可用性探测（2026-10-31 AML Full 根因修复的组成部分）------
 
@@ -409,6 +529,11 @@ class SQLiteMemoryStore(MemoryStore):
             return inserted
 
     def _append_vec_cache(self, mem_id: str, scope: str, embedding: list[float]) -> None:
+        """写侧追加缓存：add() 已在写锁内调用，这里叠 _cache_lock 与读侧快照互斥。"""
+        with self._cache_lock:
+            self._append_vec_cache_locked(mem_id, scope, embedding)
+
+    def _append_vec_cache_locked(self, mem_id: str, scope: str, embedding: list[float]) -> None:
         vec = np.asarray(embedding, dtype=np.float32)
         if self._vec_matrix is None:
             page_size = self._VEC_PAGE_SIZE
@@ -443,15 +568,16 @@ class SQLiteMemoryStore(MemoryStore):
 
     def _scope_row_index(self, scope: str) -> np.ndarray | None:
         """该 scope 在冻结矩阵中的升序行号（等价于 np.nonzero(scope_arr == scope)）。"""
-        rows = self._scope_rows.get(scope)
-        if not rows:
-            return None
-        cached = self._scope_idx_cache.get(scope)
-        if cached is not None and cached[0] == len(rows):
-            return cached[1]
-        arr = np.asarray(rows, dtype=np.int64)
-        self._scope_idx_cache[scope] = (arr.size, arr)
-        return arr
+        with self._cache_lock:
+            rows = self._scope_rows.get(scope)
+            if not rows:
+                return None
+            cached = self._scope_idx_cache.get(scope)
+            if cached is not None and cached[0] == len(rows):
+                return cached[1]
+            arr = np.asarray(rows, dtype=np.int64)
+            self._scope_idx_cache[scope] = (arr.size, arr)
+            return arr
 
     def _rebuild_scope_rows(self) -> None:
         self._scope_rows = {}
@@ -461,6 +587,10 @@ class SQLiteMemoryStore(MemoryStore):
 
     def _ensure_vec_cache(self) -> np.ndarray:
         """首次向量检索前把分页折成单一矩阵（此后追加走容量摊销）。"""
+        with self._cache_lock:
+            return self._ensure_vec_cache_locked()
+
+    def _ensure_vec_cache_locked(self) -> np.ndarray:
         if self._vec_matrix is not None:
             if self._vec_rows > len(self._vec_ids):
                 # 防御：矩阵逻辑行数不得越过 ids 长度（多余行无效）
@@ -468,7 +598,7 @@ class SQLiteMemoryStore(MemoryStore):
             return self._vec_matrix[: self._vec_rows]
         if not self._vec_pages:
             # 冷启动：从库中全量载入（向量以 float32 落库，行格式同 numpy 内存布局）
-            rows = self._conn.execute(
+            rows = self._read_connection().execute(
                 "SELECT v.mem_id, v.embedding, m.scope FROM vectors v "
                 "JOIN memories m ON m.id = v.mem_id"
             ).fetchall()
@@ -502,11 +632,10 @@ class SQLiteMemoryStore(MemoryStore):
     # -- 查询 ---------------------------------------------------------------
 
     def get(self, mem_id: str, scope: str) -> MemoryInstance | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM memories WHERE id = ? AND scope = ?", (mem_id, scope)
-            ).fetchone()
-            return self._row_to_mem(row) if row else None
+        row = self._read_connection().execute(
+            "SELECT * FROM memories WHERE id = ? AND scope = ?", (mem_id, scope)
+        ).fetchone()
+        return self._row_to_mem(row) if row else None
 
     def get_by_hash(self, scope: str, content_hash: str) -> MemoryInstance | None:
         """按去重指纹定位活跃记忆（retcon 修正链的旧记忆定位入口）。
@@ -514,24 +643,23 @@ class SQLiteMemoryStore(MemoryStore):
         UNIQUE(scope, content_hash) 保证至多一条；只看 ACTIVE——
         已被取代/归档的记忆不可再作为修正对象（避免套套链）。
         """
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM memories WHERE scope = ? AND content_hash = ? "
-                "AND status = 'ACTIVE'",
-                (scope, content_hash),
-            ).fetchone()
-            return self._row_to_mem(row) if row else None
+        row = self._read_connection().execute(
+            "SELECT * FROM memories WHERE scope = ? AND content_hash = ? "
+            "AND status = 'ACTIVE'",
+            (scope, content_hash),
+        ).fetchone()
+        return self._row_to_mem(row) if row else None
 
     def count(self, scope: str | None = None) -> int:
-        with self._lock:
-            if scope is None:
-                return self._conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE'"
-                ).fetchone()[0]
-            return self._conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE scope = ? AND status = 'ACTIVE'",
-                (scope,),
+        conn = self._read_connection()
+        if scope is None:
+            return conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE'"
             ).fetchone()[0]
+        return conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE scope = ? AND status = 'ACTIVE'",
+            (scope,),
+        ).fetchone()[0]
 
     def active_timeline(self, scope: str) -> list[tuple[str | None, str]]:
         """scope 内 ACTIVE 记忆按入库序（rowid）的 (session_id, id) 序列。
@@ -544,9 +672,14 @@ class SQLiteMemoryStore(MemoryStore):
         现仅当“只发生了纯追加”（无 ACTIVE 成员集结构变更，且新增行数 == 计数增量）
         时做增量拼接；其余情况（supersede/forget/clear 或计数不自洽）仍全量重建，
         结果与原实现逐条相等。
+
+        2026-10-31 读写分离：本方法只在 `_cache_lock` 内自串行，不碰写锁。key 先取、
+        ver 后取的原有序保守：写者若在这两步之间改了 ACTIVE 成员集，ver 会变新
+        而全量重建；计数下降也不会满足“纯追加”条件，不会误用旧时间线。
         """
-        with self._lock:
-            row = self._conn.execute(
+        with self._cache_lock:
+            conn = self._read_connection()
+            row = conn.execute(
                 "SELECT COUNT(*), MAX(rowid) FROM memories "
                 "WHERE scope = ? AND status = 'ACTIVE'",
                 (scope,),
@@ -561,23 +694,30 @@ class SQLiteMemoryStore(MemoryStore):
                     len(cached) > 2 and cached[2] == ver
                     and key[0] > cached[0][0] and key[1] > cached[0][1]
                 ):
-                    extra = self._conn.execute(
-                        "SELECT session_id, id FROM memories "
+                    extra = conn.execute(
+                        "SELECT session_id, id, rowid AS rid FROM memories "
                         "WHERE scope = ? AND status = 'ACTIVE' AND rowid > ? ORDER BY rowid",
                         (scope, cached[0][1]),
                     ).fetchall()
                     delta = key[0] - cached[0][0]
                     if len(extra) == delta:  # 自洽校验：只可能是纯追加
                         timeline = cached[1] + [(r["session_id"], r["id"]) for r in extra]
-                        self._timeline_cache[scope] = (key, timeline, ver)
+                        # 缓存键必须描述“实际取回的行”，不能用探针值：探针与 extra 分属
+                        # 两次读，中间可能有写者提交（读写分离后不再被写锁隔绝）——用探针
+                        # 值会把集外晚到的行记成已覆盖，下次增量重复拼接、时间线出现重行
+                        # （并发混跑回归实测抓到过）。写者串行⇒rowid 无空洞，取末行即可。
+                        self._timeline_cache[scope] = (
+                            (len(timeline), int(extra[-1]["rid"])), timeline, ver
+                        )
                         return timeline
-            rows = self._conn.execute(
-                "SELECT session_id, id FROM memories "
+            rows = conn.execute(
+                "SELECT session_id, id, rowid AS rid FROM memories "
                 "WHERE scope = ? AND status = 'ACTIVE' ORDER BY rowid",
                 (scope,),
             ).fetchall()
             timeline = [(r["session_id"], r["id"]) for r in rows]
-            self._timeline_cache[scope] = (key, timeline, ver)
+            last_rid = int(rows[-1]["rid"]) if rows else key[1]
+            self._timeline_cache[scope] = ((len(timeline), last_rid), timeline, ver)
             return timeline
 
     def entity_search(self, query: str, scope: str, limit: int) -> list[tuple[MemoryInstance, float]]:
@@ -588,11 +728,10 @@ class SQLiteMemoryStore(MemoryStore):
         千级规模扫描 ACTIVE 行即可；规模触发（>万条）后转独立倒排表，登记 P2。
         """
         q = query.casefold()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM memories WHERE scope = ? AND status = 'ACTIVE'",
-                (scope,),
-            ).fetchall()
+        rows = self._read_connection().execute(
+            "SELECT * FROM memories WHERE scope = ? AND status = 'ACTIVE'",
+            (scope,),
+        ).fetchall()
         scored: list[tuple[MemoryInstance, int]] = []
         for r in rows:
             mem = self._row_to_mem(r)
@@ -625,12 +764,11 @@ class SQLiteMemoryStore(MemoryStore):
         params: list[str] = []
         for n in chapter_nos:
             params += [f"【第{n}章%", f"【Ch {n}%"]
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT m.* FROM memories m "
-                f"WHERE m.scope = ? AND m.status = 'ACTIVE' AND ({conds})",
-                [scope, *params],
-            ).fetchall()
+        rows = self._read_connection().execute(
+            "SELECT m.* FROM memories m "
+            f"WHERE m.scope = ? AND m.status = 'ACTIVE' AND ({conds})",
+            [scope, *params],
+        ).fetchall()
         mems = [self._row_to_mem(r) for r in rows]
 
         def _hits(mem: MemoryInstance) -> int:
@@ -651,14 +789,13 @@ class SQLiteMemoryStore(MemoryStore):
         match_expr = _fts_escape(query)
         if not match_expr:
             return []
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT m.*, bm25(memories_fts) AS rank_score "
-                "FROM memories_fts f JOIN memories m ON m.id = f.mem_id "
-                "WHERE memories_fts MATCH ? AND f.scope = ? AND m.status = 'ACTIVE' "
-                "ORDER BY rank_score LIMIT ?",
-                (match_expr, scope, limit),
-            ).fetchall()
+        rows = self._read_connection().execute(
+            "SELECT m.*, bm25(memories_fts) AS rank_score "
+            "FROM memories_fts f JOIN memories m ON m.id = f.mem_id "
+            "WHERE memories_fts MATCH ? AND f.scope = ? AND m.status = 'ACTIVE' "
+            "ORDER BY rank_score LIMIT ?",
+            (match_expr, scope, limit),
+        ).fetchall()
         out: list[tuple[MemoryInstance, float]] = []
         for r in rows:
             bm25 = r["rank_score"]  # 越小越相关，可为负
@@ -675,48 +812,56 @@ class SQLiteMemoryStore(MemoryStore):
         保证"无相关记忆"时返回空结果而非硬凑条目（官方契约允许空数组）。
         检索权重/可提取性的调制在融合层进行，本方法保持纯粹余弦语义。
         """
-        with self._lock:
+        # 读写分离：写锁不再挡检索。_cache_lock 内只做一件事——取一个一致快照：
+        # 矩阵视图 / ids / 行号三者必须同刻捕获，否则行号可能指向写者刚追加、
+        # 而本视图（行数已固定）尚不可见的行。余弦计算与取行全部在锁外完成。
+        with self._cache_lock:
             matrix = self._ensure_vec_cache()
-            if not self._vec_ids or matrix.shape[0] == 0:
-                return []
-            q = np.asarray(embedding, dtype=np.float32)
+            n_rows = matrix.shape[0]
+            ids = self._vec_ids
             # scope 行号索引增量维护：原实现每次检索把整库 scope 字符串重转 numpy
             # 数组（13.2 万行本地基准 237 ms）并 np.nonzero，且全程持全局 RLock。
             # _scope_rows[scope] 按升序追加，与 np.nonzero(mask)[0] 逐元素相等。
             idx = self._scope_row_index(scope)
-            if idx is None or idx.size == 0:
+        if not ids or n_rows == 0 or idx is None or idx.size == 0:
+            return []
+        if idx[-1] >= n_rows:  # 防御：同刻快照不应越界，留一手兑底
+            idx = idx[idx < n_rows]
+            if idx.size == 0:
                 return []
-            sub = matrix[idx]
-            qn = np.linalg.norm(q)
-            subn = np.linalg.norm(sub, axis=1)
-            denom = np.clip(subn * qn, 1e-9, None)
-            sims = (sub @ q) / denom
-            order = np.argsort(-sims)[:limit]
-            # 批量取回：原实现对每条结果各发 2 次 point query（limit=k*3=300 ⇒ 600 次），
-            # 两次查询 WHERE 完全同构（都要求 status='ACTIVE'），合为 1 次 IN 查询后，存
-            # 在性判定与取行语义 1:1 不变（同一 mem_id 多行命中仍逐条返回，与原一致）。
-            cand = [self._vec_ids[idx[i]] for i in order]
-            fetched: dict[str, sqlite3.Row] = {}
-            for k0 in range(0, len(cand), 500):
-                chunk = cand[k0:k0 + 500]
-                ph = ",".join("?" for _ in chunk)
-                for r in self._conn.execute(
-                    f"SELECT * FROM memories WHERE status = 'ACTIVE' AND id IN ({ph})", chunk
-                ):
-                    if r["id"] not in fetched:
-                        fetched[r["id"]] = r
-            out: list[tuple[MemoryInstance, float]] = []
-            for i in order:
-                # RULE/no_decay 豁免语义剪枝（维度 F 红线：规则召回优先——规则是稳定
-                # 约束，价值高于噪声风险；rule_boost 在融合层只加成排序不扩大召回）
-                row = fetched.get(self._vec_ids[idx[i]])
-                if row is None:
-                    continue
-                is_rule = row["mem_type"] == MemoryType.RULE.value or bool(row["no_decay"])
-                if (not is_rule) and float(sims[i]) < min_cos:
-                    continue  # precision-first：普通记忆低于语义下限直接剪枝
-                out.append((self._row_to_mem(row), float(sims[i])))
-            return out
+        q = np.asarray(embedding, dtype=np.float32)
+        sub = matrix[idx]
+        qn = np.linalg.norm(q)
+        subn = np.linalg.norm(sub, axis=1)
+        denom = np.clip(subn * qn, 1e-9, None)
+        sims = (sub @ q) / denom
+        order = np.argsort(-sims)[:limit]
+        # 批量取回：原实现对每条结果各发 2 次 point query（limit=k*3=300 ⇒ 600 次），
+        # 两次查询 WHERE 完全同构（都要求 status='ACTIVE'），合为 1 次 IN 查询后，存
+        # 在性判定与取行语义 1:1 不变（同一 mem_id 多行命中仍逐条返回，与原一致）。
+        cand = [ids[idx[i]] for i in order]
+        conn = self._read_connection()
+        fetched: dict[str, sqlite3.Row] = {}
+        for k0 in range(0, len(cand), 500):
+            chunk = cand[k0:k0 + 500]
+            ph = ",".join("?" for _ in chunk)
+            for r in conn.execute(
+                f"SELECT * FROM memories WHERE status = 'ACTIVE' AND id IN ({ph})", chunk
+            ):
+                if r["id"] not in fetched:
+                    fetched[r["id"]] = r
+        out: list[tuple[MemoryInstance, float]] = []
+        for i in order:
+            # RULE/no_decay 豁免语义剪枝（维度 F 红线：规则召回优先——规则是稳定
+            # 约束，价值高于噪声风险；rule_boost 在融合层只加成排序不扩大召回）
+            row = fetched.get(ids[idx[i]])
+            if row is None:
+                continue
+            is_rule = row["mem_type"] == MemoryType.RULE.value or bool(row["no_decay"])
+            if (not is_rule) and float(sims[i]) < min_cos:
+                continue  # precision-first：普通记忆低于语义下限直接剪枝
+            out.append((self._row_to_mem(row), float(sims[i])))
+        return out
 
     # -- 治理 ---------------------------------------------------------------
 
@@ -739,26 +884,24 @@ class SQLiteMemoryStore(MemoryStore):
     def vector_dim(self, scope: str) -> int | None:
         """hash 向量通道可用性：vectors 表有行即返回本 store 维度（防御 legacy 混维库：
         真实库曾混入 1024 行——缓存按 self._dim 过滤，查询须用同维 hash 嵌入）。"""
-        with self._lock:
-            row = self._conn.execute("SELECT COUNT(*) FROM vectors").fetchone()
-            return self._dim if row and int(row[0]) > 0 else None
+        row = self._read_connection().execute("SELECT COUNT(*) FROM vectors").fetchone()
+        return self._dim if row and int(row[0]) > 0 else None
 
     def sem_count(self, scope: str) -> int:
         """scope 的语义向量条数（>0 才走语义通道，否则静默回退）。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM vectors_sem WHERE scope = ?", (scope,)
-            ).fetchone()
-            return int(row[0]) if row else 0
+        row = self._read_connection().execute(
+            "SELECT COUNT(*) FROM vectors_sem WHERE scope = ?", (scope,)
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def sem_search(
         self, embedding: list[float], scope: str, limit: int, min_cos: float = 0.05
     ) -> list[tuple[MemoryInstance, float]]:
         """语义通道（独立表）：纯余弦降序；RULE/no_decay 豁免下限（与 vector_search 同则）。"""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT mem_id, dim, embedding FROM vectors_sem WHERE scope = ?", (scope,)
-            ).fetchall()
+        conn = self._read_connection()
+        rows = conn.execute(
+            "SELECT mem_id, dim, embedding FROM vectors_sem WHERE scope = ?", (scope,)
+        ).fetchall()
         if not rows:
             return []
         q = np.asarray(embedding, dtype=np.float32)
@@ -779,7 +922,7 @@ class SQLiteMemoryStore(MemoryStore):
         order = np.argsort(-sims)[:limit]
         out: list[tuple[MemoryInstance, float]] = []
         for i in order:
-            row = self._conn.execute(
+            row = conn.execute(
                 "SELECT mem_type, no_decay FROM memories WHERE id = ? AND status = 'ACTIVE'",
                 (ids[i],),
             ).fetchone()
@@ -788,7 +931,7 @@ class SQLiteMemoryStore(MemoryStore):
             is_rule = row["mem_type"] == MemoryType.RULE.value or bool(row["no_decay"])
             if (not is_rule) and float(sims[i]) < min_cos:
                 continue
-            full = self._conn.execute(
+            full = conn.execute(
                 "SELECT * FROM memories WHERE id = ? AND status = 'ACTIVE'", (ids[i],)
             ).fetchone()
             if full is None:
@@ -836,18 +979,45 @@ class SQLiteMemoryStore(MemoryStore):
 
     @property
     def connection(self) -> sqlite3.Connection:
-        """底层连接（同包 TaskJournal 复用，共享同一锁/事务上下文，避免多连接写冲突）。"""
+        """写连接（同包 TaskJournal/图模块复用，共享同一锁/事务上下文，避免多连接写冲突）。
+
+        只能在 `store.lock` 内用于写入；纯 SELECT 请改用 `store.read_connection`。
+        """
         return self._conn
 
     @property
+    def read_connection(self) -> _ReadConn:
+        """本线程只读连接（query_only）：供模块级裸 SELECT 使用，不涉写锁也不参写事务。"""
+        return self._read_connection()
+
+    @property
     def lock(self) -> threading.RLock:
-        """写锁（门面/图模块直操 connection 时必须同源持锁）。"""
+        """写锁（门面/图模块直操 connection 时必须同源持锁；读侧不需它）。"""
         return self._lock
 
     def close(self) -> None:
-        """关闭底层连接（进程内门面/脚本用完释放；服务端在 lifespan 调用）。"""
+        """关闭底层连接（进程内门面/脚本用完释放；服务端在 lifespan 调用）。
+
+        返回后不得再有任何连接挂着这个库文件：后台线程（如异步增强 worker）可能
+        正持着只读连接，留着它就会钉住库文件。回收只能走语句间隙（见 _ReadConn）：
+        本线程的直接关，别的线程的限时等到间隙再关；等不到就留给它自己退场——
+        跳线程硬关会 access violation（实测），那比一个残留句柄严重得多。
+        """
+        me = threading.get_ident()
         with self._lock:
             self._conn.close()
+            with self._cache_lock:
+                self._closed = True
+                keep: list[tuple[int, _ReadConn]] = []
+                for ident, rc in self._read_cons:
+                    if ident == me:
+                        rc.release(0.0)  # 本线程建的连接没有并发，间隙必定可得
+                        continue
+                    if not rc.release(0.2):
+                        keep.append((ident, rc))
+                self._read_cons = keep
+            if getattr(self._read_local, "con", None) is not None:
+                self._read_local.con = None
 
     def touch_retrieval(self, mem_ids: list[str], scope: str) -> None:
         """检索命中即强化（测试效应，Science 2008 / 论证文档 2026-08-31 第三节）：
@@ -928,15 +1098,16 @@ class SQLiteMemoryStore(MemoryStore):
             self._conn.execute("DELETE FROM journal WHERE scope = ?", (scope,))
             self._conn.execute("DELETE FROM scope_meta WHERE scope = ?", (scope,))
             self._conn.commit()
-            self._vec_matrix = None  # 触发下次惰性重建
-            self._vec_rows = 0
-            self._vec_pages = []
-            self._vec_ids = []
-            self._vec_scopes = []
-            self._scope_rows = {}
-            self._scope_idx_cache.clear()
-            self._timeline_cache.pop(scope, None)
-            self._active_set_version += 1
+            with self._cache_lock:  # 缓存失效与读侧快照互斥（锁序 _lock -> _cache_lock）
+                self._vec_matrix = None  # 触发下次惰性重建
+                self._vec_rows = 0
+                self._vec_pages = []
+                self._vec_ids = []
+                self._vec_scopes = []
+                self._scope_rows = {}
+                self._scope_idx_cache.clear()
+                self._timeline_cache.pop(scope, None)
+                self._active_set_version += 1
             return n
 
     # ------------------------------------------------------------------
@@ -970,7 +1141,7 @@ class SQLiteMemoryStore(MemoryStore):
         真实使用（app）scope 不标记不删；返回被清扫的 scope 列表（幂等可重入）。
         """
         now = int(time.time() * 1000) if now_ms is None else now_ms
-        rows = self._conn.execute(
+        rows = self._read_connection().execute(
             "SELECT scope FROM scope_meta "
             "WHERE source='eval' AND last_write_ms < ?",
             (now - ttl_days * 86_400_000,),
@@ -983,7 +1154,7 @@ class SQLiteMemoryStore(MemoryStore):
 
     def scope_meta_rows(self, limit: int = 500) -> list[dict]:
         """只读盘点（health/自证用）：scope 元数据行。"""
-        rows = self._conn.execute(
+        rows = self._read_connection().execute(
             "SELECT scope, first_write_ms, last_write_ms, source "
             "FROM scope_meta ORDER BY last_write_ms DESC LIMIT ?",
             (limit,),

@@ -296,7 +296,10 @@ def search_memory(
         # 时间（消息陈述即事件时刻的语料语义）；无线索 = 原样返回。
         from .time_anchor import apply_relative_window
         try:
-            _ref_ms = store.connection.execute(
+            # 只读连接（2026-10-31 读写分离）：原先在写连接上无锁裸 SELECT，既会
+            # 排进写事务、又可能读到写者未提交的中间态；ref_ms 只用于时间窗过滤，
+            # 语义不变。
+            _ref_ms = store.read_connection.execute(
                 "SELECT MAX(COALESCE(event_ts_ms, created_ts_ms)) "
                 "FROM memories WHERE scope = ?", (scope,),
             ).fetchone()[0]
