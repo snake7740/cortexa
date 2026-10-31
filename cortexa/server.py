@@ -125,8 +125,29 @@ class _AdmissionGate:
 # 应用工厂
 # ---------------------------------------------------------------------------
 
+def _ensure_cortexa_log_sink() -> None:
+    """让 cortexa.* 的 INFO 真正能被 `docker logs` 看到（2026-10-31 取证修复）。
+
+    根因：uvicorn 只配置它自己的 `uvicorn.*` logger，根 logger 因此没有 handler；
+    此时 `logging.lastResort` 兜底只放行 WARNING 及以上，于是 HOTPATH 时间序列与
+    「A 层护栏启动即报」两条 INFO 全程静默——插桩等于没装。这里显式挂一个 stderr
+    handler 并把 `cortexa` 命名空间级别设为 INFO，幂等（重复 create_app 不叠加）。
+    只影响日志可见性，不触碰任何响应体/状态码/响应头。
+    """
+    lg = logging.getLogger("cortexa")
+    if any(getattr(h, "_cortexa_sink", False) for h in lg.handlers):
+        return
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    h._cortexa_sink = True  # type: ignore[attr-defined]
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    _ensure_cortexa_log_sink()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = SQLiteMemoryStore(
         db_path=str(settings.data_dir / "cortexa.db"),
