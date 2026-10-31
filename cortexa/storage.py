@@ -425,9 +425,14 @@ class SQLiteMemoryStore(MemoryStore):
         成本口径（R5 实测，按单个 scope 而非全库）：该 SQL 本就带 WHERE scope=?，
         最大 scope 2216 行 = 25.1 ms 查询 + 59 ms 解码。此前“2.93 s/条”是按
         132,559 行全库外推，高估 30—50 倍，已作废。
-        这里**不**建表达式索引：收益只有 scope 局部几十毫秒，而 CREATE INDEX 会在
-        进程启动时对线上 161,364 行整表求值表达式，与官方约 10 s 的 /health 预检
-        抢时间。谓词无索引时走 scope 索引 + 行过滤，结果集与建索引后逐行相同。
+        索引口径更正（2026-10-31 晚，本段旧结论已作废）：旧文写“这里不建表达式
+        索引，因为 CREATE INDEX 会对线上整表求值表达式、与约 10 s 的 /health 预检
+        抢时间”——实测否证。表达式索引确实建不出可用计划（查询表达式必须与
+        CREATE INDEX 逐字相同，planner 不做代数化简），但改用 VIRTUAL 生成列后
+        ALTER 只花 0.003 s（纯元数据、不重写表），建索引 0.023 s / 5649 行，外推
+        30 万行约 1.2 s，远在预检窗口内。故索引由 `_ensure_subject_column()` 建，
+        本方法只负责探测 JSON1 可用性；谓词无索引时仍走 scope 索引 + 行过滤，
+        结果集与建索引后逐行相同。
         """
         self.subject_lookup_available = False
         try:
