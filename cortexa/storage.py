@@ -333,7 +333,8 @@ class SQLiteMemoryStore(MemoryStore):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         init_graph_schema(self._conn)  # 实体关系图表（Palantir link type 纪律）
-        self._init_subject_lookup()  # 治理候选查询的表达式索引（2026-10-31 根因修复）
+        self._init_subject_lookup()  # 治理候选查询的表达式谓词能力（2026-10-31 根因修复）
+        self._ensure_subject_column()  # 生成列 + 索引：把主体候选查询降为索引查找
         # P0-3：scope 元数据表（首末写入时间/来源），30 天 TTL 合规清扫的依据
         self._conn.executescript(
             "CREATE TABLE IF NOT EXISTS scope_meta ("
@@ -434,6 +435,52 @@ class SQLiteMemoryStore(MemoryStore):
         except sqlite3.OperationalError:
             return  # 该 SQLite 无 JSON1：治理退回整库扫描口径（语义不变，只是慢）
         self.subject_lookup_available = True
+
+    def _ensure_subject_column(self) -> None:
+        """为治理主体谓词补一个 VIRTUAL 生成列 + 索引（2026-10-31，Full 运行期取证）。
+
+        背景：`find_conflicts` 的主体谓词写成 SQL 表达式，SQLite 对表达式索引的
+        要求是"WHERE 里的表达式必须与建索引时逐字相同，planner 不做代数化简"
+        （官方 lang_createindex/expridx）。本地 8600 行单 scope 实测穷举四种组合
+        （表达式索引三列/仅表达式/表达式打头、查询侧加括号与不加括号），计划
+        一律只用 `(scope=? AND status=?)`，表达式项从不 seek —— 即该谓词在 SQL
+        文本层面无法被索引化，只能改成引用一个真实列。社区对此的标准解法是生成
+        列（VIRTUAL）+ 索引：实测 `subject_txt = ?` 计划变为
+        `(scope=? AND status=? AND subject_txt=?)`，单次候选查询 11—23 ms → 0.007 ms。
+
+        成本口径（与不建索引的旧判断对比，全部本地实测于 SQLite 3.53.2）：
+        ALTER 加 VIRTUAL 列 0.003 s（只改元数据，不重写表、不回填），建索引
+        0.023 s / 5649 行 → 按行数线性外推线上 30 万行约 1.2 s，仍远低于官方约 10 s
+        的 /health 预检窗口；此后每次 Add 不再为整 scope 逐行求值 CASE。
+
+        语义：谓词值仍由 Python `_subject_key` 给出，列定义与 SUBJECT_SQL_EXPR 同一
+        常量，故 `(expr)=?` 与 `subject_txt=?` 返回同一行集（本地逐行等价校验：
+        生成列取值 vs `_subject_key` 4000 行零不一致，且 Python 侧复核循环原样保留，
+        结果集只能更少地取回、逐条仍走同一判定）。列或索引建不出来时置 False，
+        治理退回本次改动前的两条口径，行为逐字不变。
+        """
+        self.subject_column_indexed = False
+        if not getattr(self, "subject_lookup_available", False):
+            return  # 无 JSON1：表达式本身不可用，生成列同样不可用
+        try:
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(memories)")}
+            if "subject_txt" not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE memories ADD COLUMN subject_txt TEXT "
+                    f"GENERATED ALWAYS AS ({SUBJECT_SQL_EXPR}) VIRTUAL"
+                )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mem_subject_col ON "
+                "memories (scope, status, subject_txt)"
+            )
+            self._conn.commit()
+        except Exception:  # noqa: BLE001 - 建不出来就退回原口径（语义不变，只是慢）
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self.subject_column_indexed = True
 
     # -- 序列化辅助 ---------------------------------------------------------
 

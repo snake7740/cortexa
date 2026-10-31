@@ -90,6 +90,8 @@ class GovernanceEngine:
         此前按 132,559 行全库外推的“2.93 s/条”高估 30—50 倍，已作废）。现把主体
         判定下推为 SQL 谓词 (SUBJECT_SQL_EXPR) = ?，只把同主体的少数行取回；不依赖
         表达式索引（走 scope 索引 + 行过滤，结果集逐行相同）。
+        2026-10-31 补：当存储层已备好生成列 + 索引（subject_column_indexed）时改走
+        `subject_txt = ?`，同一谓词语义、索引查找；两条口径都不成立时回退原全量查询。
         Python 侧 _subject_key 复核与 slot/overlap 判定循环逐字保留——SQL 谓词只起
         "少取行"的过滤作用，结果集只能与原口径相同；谓词不可用时回退原全量查询。
         """
@@ -103,7 +105,18 @@ class GovernanceEngine:
         )
         params: list = [scope, MemoryStatus.ACTIVE.value, new_mem.id]
         rows = None
-        if getattr(self._store, "subject_lookup_available", False):
+        if getattr(self._store, "subject_column_indexed", False):
+            # 生成列口径：同一常量定义的表达式已落为真实列并有索引，谓词与下方
+            # 表达式写法等价，但可走 (scope,status,subject_txt) 索引查找而非整 scope
+            # 逐行求值（本地 8600 行实测 11—23 ms → 0.007 ms）。
+            try:
+                rows = self._store.connection.execute(
+                    f"{base} AND subject_txt = ?", [*params, subject]
+                ).fetchall()
+            except Exception:  # noqa: BLE001 - 回退口径，但必须留下计数
+                self.subject_predicate_fallbacks += 1
+                rows = None
+        elif getattr(self._store, "subject_lookup_available", False):
             try:
                 rows = self._store.connection.execute(
                     f"{base} AND ({SUBJECT_SQL_EXPR}) = ?", [*params, subject]
