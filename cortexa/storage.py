@@ -230,11 +230,21 @@ def _fts_index_text(content: str) -> str:
     return " ".join(parts)
 
 
+SUBJECT_SQL_EXPR = (
+    "CASE WHEN json_extract(entities_json,'$[0]') IS NOT NULL "
+    "THEN CAST(json_extract(entities_json,'$[0]') AS TEXT) "
+    "WHEN topic IS NOT NULL AND topic<>'' THEN topic "
+    "ELSE substr(content,1,6) END"
+)
+
+
 class SQLiteMemoryStore(MemoryStore):
     """MVP 嵌入式实现：SQLite + FTS5 + 内存 numpy 向量余弦。"""
 
-    # 向量缓存页大小（PagedAttention 思想）：追加只写页槽，消除逐条 vstack 拷贝
+    # 向量缓存页大小（PagedAttention 思想）：分页期追加只写页槽，冻结期走容量摊销
     _VEC_PAGE_SIZE = 256
+    # 冻结矩阵容量增长率：追加填满时按 2 倍扩容，全库累计拷贝 O(N) 而非 O(N²)
+    _VEC_GROW_NUMERATOR = 2
 
     def __init__(self, db_path: str, embedding_dim: int = 512) -> None:
         self._dim = embedding_dim
@@ -244,6 +254,7 @@ class SQLiteMemoryStore(MemoryStore):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         init_graph_schema(self._conn)  # 实体关系图表（Palantir link type 纪律）
+        self._init_subject_lookup()  # 治理候选查询的表达式索引（2026-10-31 根因修复）
         # P0-3：scope 元数据表（首末写入时间/来源），30 天 TTL 合规清扫的依据
         self._conn.executescript(
             "CREATE TABLE IF NOT EXISTS scope_meta ("
@@ -263,13 +274,46 @@ class SQLiteMemoryStore(MemoryStore):
         self._migrate_memories_columns()  # 既有库补列（op_type/supersedes_id）
         self._conn.commit()
         # 向量内存缓存（懒加载，写入时同步追加）；_vec_pages 是分页待合并区，
-        # _vec_matrix 非 None 表示已冻结的全量矩阵（页已全部折入）
+        # _vec_matrix 非 None 表示已冻结（页已全部折入）；_vec_rows 是冻结矩阵的
+        # 逻辑行数——_vec_matrix.shape[0] 可能更大（预留容量），检索一律取切片视图
         self._vec_ids: list[str] = []
         self._vec_scopes: list[str] = []
         self._vec_pages: list[list[np.ndarray]] = []
         self._vec_matrix: np.ndarray | None = None
-        # 邻接扩展时间线缓存：scope -> ((active_count, max_rowid), [(session_id, id)])
-        self._timeline_cache: dict[str, tuple[tuple[int, int], list[tuple[str | None, str]]]] = {}
+        self._vec_rows = 0
+        # 观测面：因容量增长被整段拷贝的行数（增长应 ~O(N)，不是 O(N²)）
+        self._vec_copy_rows = 0
+        # scope -> 该 scope 在冻结矩阵中的升序行号（替代每次检索整库重转字符串数组）
+        self._scope_rows: dict[str, list[int]] = {}
+        self._scope_idx_cache: dict[str, tuple[int, np.ndarray]] = {}
+        # 邻接扩展时间线缓存：scope -> ((active_count, max_rowid), [(session_id, id)], 版本)
+        self._timeline_cache: dict[
+            str, tuple[tuple[int, int], list[tuple[str | None, str]], int]
+        ] = {}
+        # ACTIVE 成员集结构性变更计数：supersede/forget/clear_scope 递增
+        self._active_set_version = 0
+
+    # -- 治理主体查找可用性探测（2026-10-31 AML Full 根因修复的组成部分）------
+
+    def _init_subject_lookup(self) -> None:
+        """探测 JSON1 是否可用，决定 find_conflicts 能否走主体谓词。
+
+        原实现对每条新记忆执行
+        `SELECT * FROM memories WHERE scope=? AND status='ACTIVE' AND id!=?`
+        并逐行构造 Pydantic MemoryInstance；谓词下推后只取回同主体的行。
+        成本口径（R5 实测，按单个 scope 而非全库）：该 SQL 本就带 WHERE scope=?，
+        最大 scope 2216 行 = 25.1 ms 查询 + 59 ms 解码。此前“2.93 s/条”是按
+        132,559 行全库外推，高估 30—50 倍，已作废。
+        这里**不**建表达式索引：收益只有 scope 局部几十毫秒，而 CREATE INDEX 会在
+        进程启动时对线上 161,364 行整表求值表达式，与官方约 10 s 的 /health 预检
+        抢时间。谓词无索引时走 scope 索引 + 行过滤，结果集与建索引后逐行相同。
+        """
+        self.subject_lookup_available = False
+        try:
+            self._conn.execute("SELECT json_extract('[]','$[0]') IS NULL").fetchone()
+        except sqlite3.OperationalError:
+            return  # 该 SQLite 无 JSON1：治理退回整库扫描口径（语义不变，只是慢）
+        self.subject_lookup_available = True
 
     # -- 序列化辅助 ---------------------------------------------------------
 
@@ -366,28 +410,62 @@ class SQLiteMemoryStore(MemoryStore):
 
     def _append_vec_cache(self, mem_id: str, scope: str, embedding: list[float]) -> None:
         vec = np.asarray(embedding, dtype=np.float32)
-        if self._vec_matrix is not None:
-            # 已冻结（检索发生过）后的追加：逐条 vstack。同步小批量写入下
-            # 单次拷贝毫秒级可接受；分页只消除冷启动大批量摄取的 O(N²)
-            self._vec_matrix = np.vstack([self._vec_matrix, vec])
+        if self._vec_matrix is None:
+            page_size = self._VEC_PAGE_SIZE
+            if not self._vec_pages or len(self._vec_pages[-1]) >= page_size:
+                self._vec_pages.append([vec])
+            else:
+                self._vec_pages[-1].append(vec)
             self._vec_ids.append(mem_id)
             self._vec_scopes.append(scope)
+            self._scope_rows.setdefault(scope, []).append(len(self._vec_ids) - 1)
             return
-        page_size = self._VEC_PAGE_SIZE
-        if not self._vec_pages or len(self._vec_pages[-1]) >= page_size:
-            self._vec_pages.append([vec])
-        else:
-            self._vec_pages[-1].append(vec)
+
+        # 已冻结（检索发生过）后的追加：容量摊销，取代原先逐次 np.vstack 全量拷贝。
+        # 线上 161,364 行 ×512 维 float32 = 315 MB/条（实测 251 ms），且在全局
+        # RLock 内；累积拷贝量 ~N²/2 × 2 KB = 26 TB。改为预留容量后按 2 倍扩容，
+        # 全库累计拷贝降为 O(N)，单条追加降为 O(1) 摊销。
+        rows = self._vec_rows
+        mat = self._vec_matrix
+        if mat.shape[0] <= rows:
+            cap = max(rows * self._VEC_GROW_NUMERATOR, 1024)
+            buf = np.empty((cap, self._dim), dtype=np.float32)
+            buf[:rows] = mat[:rows]
+            self._vec_copy_rows += rows
+            mat = buf
+        mat[rows] = vec
+        self._vec_matrix = mat
+        self._vec_rows = rows + 1
         self._vec_ids.append(mem_id)
         self._vec_scopes.append(scope)
+        self._scope_rows.setdefault(scope, []).append(rows)
+        self._scope_idx_cache.pop(scope, None)
+
+    def _scope_row_index(self, scope: str) -> np.ndarray | None:
+        """该 scope 在冻结矩阵中的升序行号（等价于 np.nonzero(scope_arr == scope)）。"""
+        rows = self._scope_rows.get(scope)
+        if not rows:
+            return None
+        cached = self._scope_idx_cache.get(scope)
+        if cached is not None and cached[0] == len(rows):
+            return cached[1]
+        arr = np.asarray(rows, dtype=np.int64)
+        self._scope_idx_cache[scope] = (arr.size, arr)
+        return arr
+
+    def _rebuild_scope_rows(self) -> None:
+        self._scope_rows = {}
+        for i, sc in enumerate(self._vec_scopes):
+            self._scope_rows.setdefault(sc, []).append(i)
+        self._scope_idx_cache.clear()
 
     def _ensure_vec_cache(self) -> np.ndarray:
-        """首次向量检索前把分页折成单一矩阵（此后追加走 vstack 兑底）。"""
+        """首次向量检索前把分页折成单一矩阵（此后追加走容量摊销）。"""
         if self._vec_matrix is not None:
-            if len(self._vec_ids) > self._vec_matrix.shape[0]:
-                # 防御：冻结后若有追加致 ids/矩阵不齐，按 ids 长度截齐（多余行无效）
-                self._vec_matrix = self._vec_matrix[: len(self._vec_ids)]
-            return self._vec_matrix
+            if self._vec_rows > len(self._vec_ids):
+                # 防御：矩阵逻辑行数不得越过 ids 长度（多余行无效）
+                self._vec_rows = len(self._vec_ids)
+            return self._vec_matrix[: self._vec_rows]
         if not self._vec_pages:
             # 冷启动：从库中全量载入（向量以 float32 落库，行格式同 numpy 内存布局）
             rows = self._conn.execute(
@@ -414,10 +492,12 @@ class SQLiteMemoryStore(MemoryStore):
         self._vec_matrix = (
             np.vstack(pages) if pages else np.zeros((0, self._dim), dtype=np.float32)
         )
-        if len(self._vec_ids) > self._vec_matrix.shape[0]:
-            self._vec_ids = self._vec_ids[: self._vec_matrix.shape[0]]
-            self._vec_scopes = self._vec_scopes[: self._vec_matrix.shape[0]]
-        return self._vec_matrix
+        self._vec_rows = self._vec_matrix.shape[0]
+        if len(self._vec_ids) > self._vec_rows:
+            self._vec_ids = self._vec_ids[: self._vec_rows]
+            self._vec_scopes = self._vec_scopes[: self._vec_rows]
+        self._rebuild_scope_rows()
+        return self._vec_matrix[: self._vec_rows]
 
     # -- 查询 ---------------------------------------------------------------
 
@@ -457,8 +537,13 @@ class SQLiteMemoryStore(MemoryStore):
         """scope 内 ACTIVE 记忆按入库序（rowid）的 (session_id, id) 序列。
 
         同会话邻接扩展（2026-10-29，InvMem/AMI 证据链）的消费面：存储序即对话
-        轮次序，邻居必须与种子同会话。缓存失效依据 (active 数, max rowid)：
-        新写抬高 rowid，supersede/forget 降低 active 计数，两类变更均命中。
+        轮次序，邻居必须与种子同会话。
+
+        2026-10-31 根因修复：原缓存仅以 (active 数, max rowid) 为失效依据，而任何
+        新写都会拾高 rowid ⇒ 流式参评下每次检索全量重建 13.2 万行（本地基准 298 ms）。
+        现仅当“只发生了纯追加”（无 ACTIVE 成员集结构变更，且新增行数 == 计数增量）
+        时做增量拼接；其余情况（supersede/forget/clear 或计数不自洽）仍全量重建，
+        结果与原实现逐条相等。
         """
         with self._lock:
             row = self._conn.execute(
@@ -467,16 +552,32 @@ class SQLiteMemoryStore(MemoryStore):
                 (scope,),
             ).fetchone()
             key = (int(row[0] or 0), int(row[1] or 0))
+            ver = self._active_set_version
             cached = self._timeline_cache.get(scope)
-            if cached is not None and cached[0] == key:
-                return cached[1]
+            if cached is not None:
+                if cached[0] == key:
+                    return cached[1]
+                if (
+                    len(cached) > 2 and cached[2] == ver
+                    and key[0] > cached[0][0] and key[1] > cached[0][1]
+                ):
+                    extra = self._conn.execute(
+                        "SELECT session_id, id FROM memories "
+                        "WHERE scope = ? AND status = 'ACTIVE' AND rowid > ? ORDER BY rowid",
+                        (scope, cached[0][1]),
+                    ).fetchall()
+                    delta = key[0] - cached[0][0]
+                    if len(extra) == delta:  # 自洽校验：只可能是纯追加
+                        timeline = cached[1] + [(r["session_id"], r["id"]) for r in extra]
+                        self._timeline_cache[scope] = (key, timeline, ver)
+                        return timeline
             rows = self._conn.execute(
                 "SELECT session_id, id FROM memories "
                 "WHERE scope = ? AND status = 'ACTIVE' ORDER BY rowid",
                 (scope,),
             ).fetchall()
             timeline = [(r["session_id"], r["id"]) for r in rows]
-            self._timeline_cache[scope] = (key, timeline)
+            self._timeline_cache[scope] = (key, timeline, ver)
             return timeline
 
     def entity_search(self, query: str, scope: str, limit: int) -> list[tuple[MemoryInstance, float]]:
@@ -576,41 +677,45 @@ class SQLiteMemoryStore(MemoryStore):
         """
         with self._lock:
             matrix = self._ensure_vec_cache()
-            if self._vec_ids is None or matrix.shape[0] == 0:
+            if not self._vec_ids or matrix.shape[0] == 0:
                 return []
             q = np.asarray(embedding, dtype=np.float32)
-            scope_arr = np.asarray(self._vec_scopes)
-            mask = scope_arr == scope
-            if not mask.any():
+            # scope 行号索引增量维护：原实现每次检索把整库 scope 字符串重转 numpy
+            # 数组（13.2 万行本地基准 237 ms）并 np.nonzero，且全程持全局 RLock。
+            # _scope_rows[scope] 按升序追加，与 np.nonzero(mask)[0] 逐元素相等。
+            idx = self._scope_row_index(scope)
+            if idx is None or idx.size == 0:
                 return []
-            idx = np.nonzero(mask)[0]
             sub = matrix[idx]
             qn = np.linalg.norm(q)
             subn = np.linalg.norm(sub, axis=1)
             denom = np.clip(subn * qn, 1e-9, None)
             sims = (sub @ q) / denom
             order = np.argsort(-sims)[:limit]
+            # 批量取回：原实现对每条结果各发 2 次 point query（limit=k*3=300 ⇒ 600 次），
+            # 两次查询 WHERE 完全同构（都要求 status='ACTIVE'），合为 1 次 IN 查询后，存
+            # 在性判定与取行语义 1:1 不变（同一 mem_id 多行命中仍逐条返回，与原一致）。
+            cand = [self._vec_ids[idx[i]] for i in order]
+            fetched: dict[str, sqlite3.Row] = {}
+            for k0 in range(0, len(cand), 500):
+                chunk = cand[k0:k0 + 500]
+                ph = ",".join("?" for _ in chunk)
+                for r in self._conn.execute(
+                    f"SELECT * FROM memories WHERE status = 'ACTIVE' AND id IN ({ph})", chunk
+                ):
+                    if r["id"] not in fetched:
+                        fetched[r["id"]] = r
             out: list[tuple[MemoryInstance, float]] = []
             for i in order:
                 # RULE/no_decay 豁免语义剪枝（维度 F 红线：规则召回优先——规则是稳定
                 # 约束，价值高于噪声风险；rule_boost 在融合层只加成排序不扩大召回）
-                mem_id = self._vec_ids[idx[i]]
-                row = self._conn.execute(
-                    "SELECT mem_type, no_decay FROM memories WHERE id = ? AND status = 'ACTIVE'",
-                    (mem_id,),
-                ).fetchone()
+                row = fetched.get(self._vec_ids[idx[i]])
                 if row is None:
                     continue
                 is_rule = row["mem_type"] == MemoryType.RULE.value or bool(row["no_decay"])
                 if (not is_rule) and float(sims[i]) < min_cos:
                     continue  # precision-first：普通记忆低于语义下限直接剪枝
-                full = self._conn.execute(
-                    "SELECT * FROM memories WHERE id = ? AND status = 'ACTIVE'", (mem_id,)
-                ).fetchone()
-                if full is None:
-                    continue
-                mem = self._row_to_mem(full)
-                out.append((mem, float(sims[i])))
+                out.append((self._row_to_mem(row), float(sims[i])))
             return out
 
     # -- 治理 ---------------------------------------------------------------
@@ -704,6 +809,8 @@ class SQLiteMemoryStore(MemoryStore):
                 (MemoryStatus.SUPERSEDED.value, now_ms, new_id, old_id, scope),
             )
             self._conn.commit()
+            if cur.rowcount:
+                self._active_set_version += 1  # ACTIVE 成员集变更：时间线必须全量重建
             if cur.rowcount == 0:
                 raise KeyError(f"active memory {old_id} not found in scope {scope}")
 
@@ -725,6 +832,7 @@ class SQLiteMemoryStore(MemoryStore):
                 (MemoryStatus.FORGOTTEN.value, mem_id, scope),
             )
             self._conn.commit()
+            self._active_set_version += 1  # ACTIVE 成员集变更：时间线必须全量重建
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -821,9 +929,14 @@ class SQLiteMemoryStore(MemoryStore):
             self._conn.execute("DELETE FROM scope_meta WHERE scope = ?", (scope,))
             self._conn.commit()
             self._vec_matrix = None  # 触发下次惰性重建
+            self._vec_rows = 0
             self._vec_pages = []
             self._vec_ids = []
             self._vec_scopes = []
+            self._scope_rows = {}
+            self._scope_idx_cache.clear()
+            self._timeline_cache.pop(scope, None)
+            self._active_set_version += 1
             return n
 
     # ------------------------------------------------------------------

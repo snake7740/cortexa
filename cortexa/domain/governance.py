@@ -18,7 +18,7 @@ import re
 
 from ..models import MemoryInstance, MemoryStatus
 from ..schema import SceneSchema, get_schema
-from ..storage import MemoryStore
+from ..storage import SUBJECT_SQL_EXPR, MemoryStore
 
 
 class GovernanceEngine:
@@ -27,6 +27,8 @@ class GovernanceEngine:
     def __init__(self, store: MemoryStore, schema: SceneSchema | None = None) -> None:
         self._store = store
         self._schema = schema or get_schema("aml")
+        # 主体谓词回退次数（0 = 全程走索引谓词；非 0 说明环境不支持 JSON1）
+        self.subject_predicate_fallbacks = 0
 
     # 否定/取代词（新陈述含这些 → 倾向取代旧陈述）。
     # v2（2026-09-06 治理精度审计）：EN 一律整词/整短语匹配（词边界）——
@@ -81,16 +83,36 @@ class GovernanceEngine:
         改为单次 SELECT * 全量取回后统一用 _row_to_mem 解码（与 store.get 同一构建器，
         语义 1:1）——逐 chunk Add 的治理开销从 O(N) 次查询降到 1 次查询 + O(N) 解码
         （解码仅活跃集一次，缓存友好；万条级实测见 tests/test_hotpath_complexity.py）。
+
+        2026-10-31 修复：上面那次优化仍要拉回 scope 内全部 ACTIVE 行并逐行构造
+        Pydantic，且全程在 store 的全局 RLock 内。该项成本随**单个 scope** 的行数涨，
+        不随全库行数涨（R5 实测：最大 scope 2216 行 = 25.1 ms 查询 + 59 ms 解码；
+        此前按 132,559 行全库外推的“2.93 s/条”高估 30—50 倍，已作废）。现把主体
+        判定下推为 SQL 谓词 (SUBJECT_SQL_EXPR) = ?，只把同主体的少数行取回；不依赖
+        表达式索引（走 scope 索引 + 行过滤，结果集逐行相同）。
+        Python 侧 _subject_key 复核与 slot/overlap 判定循环逐字保留——SQL 谓词只起
+        "少取行"的过滤作用，结果集只能与原口径相同；谓词不可用时回退原全量查询。
         """
         subject = self._subject_key(new_mem)
         slot = self._slot_key(new_mem)
         if not subject:
             return []
-        rows = self._store.connection.execute(
+        base = (
             "SELECT * FROM memories WHERE scope = ? AND status = ? "
-            "AND id != ?",
-            (scope, MemoryStatus.ACTIVE.value, new_mem.id),
-        ).fetchall()
+            "AND id != ?"
+        )
+        params: list = [scope, MemoryStatus.ACTIVE.value, new_mem.id]
+        rows = None
+        if getattr(self._store, "subject_lookup_available", False):
+            try:
+                rows = self._store.connection.execute(
+                    f"{base} AND ({SUBJECT_SQL_EXPR}) = ?", [*params, subject]
+                ).fetchall()
+            except Exception:  # noqa: BLE001 - 回退口径，但必须留下计数
+                self.subject_predicate_fallbacks += 1
+                rows = None
+        if rows is None:
+            rows = self._store.connection.execute(base, params).fetchall()
         conflicts = []
         for r in rows:
             old = self._store._row_to_mem(r)

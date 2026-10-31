@@ -185,18 +185,19 @@ class TestPagedVectorCache:
         cm.recall("星图", scope=s, top_k=3)  # 触发分页折叠
         store = cm._store
         assert store._vec_matrix is not None
-        assert store._vec_matrix.shape[0] == len(store._vec_ids) == n, "跨页 fold 行/ids 错位"
+        assert store._ensure_vec_cache().shape[0] == len(store._vec_ids) == n, "跨页 fold 行/ids 错位"
         assert store._vec_pages == []  # 页已全部折入
 
     def test_search_then_incremental_add_consistent(self, cm: Cortexa) -> None:
         s = "inc"
         cm.remember("初始记忆 星图第一宿", scope=s)
         cm.recall("星图", scope=s)  # 冻结
-        for i in range(3):  # 冻结后追加走 vstack 兑底
+        for i in range(3):  # 冻结后追加走容量摊销（矩阵物理行数可能大于逻辑行数）
             cm.remember(f"新增条目 {i} 关联星图第二宿", scope=s)
         cm.recall("新增条目", scope=s)
         store = cm._store
-        assert store._vec_matrix.shape[0] == len(store._vec_ids) == 4
+        assert store._ensure_vec_cache().shape[0] == len(store._vec_ids) == 4
+        assert store._vec_rows == 4
 
 
 class TestFSRSRetentionModulation:
